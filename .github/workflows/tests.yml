@@ -13,6 +13,10 @@ on:
         type: choice
         options: [windows-latest, macos-latest, ubuntu-latest, all]
         default: windows-latest
+      pytest_args:
+        description: 'Доп. аргументы pytest (например -v tests/test_tour.py)'
+        type: string
+        default: ''
 
 # Тестам нужен только checkout — токену больше ничего не даём.
 permissions:
@@ -48,7 +52,16 @@ jobs:
       - name: Зависимости Python
         run: python -m pip install --require-hashes -r requirements-lock.txt
 
+      # bash на всех ОС (на Windows — Git Bash): одна строка запуска; аргументы
+      # приходят через env, а не подстановкой в скрипт.
       - name: Тесты
+        shell: bash
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m pytest -q -o faulthandler_timeout=120 -rs
+          PYTEST_ARGS: ${{ inputs.pytest_args }}
+        run: |
+          set +e
+          python -m pytest -q -o faulthandler_timeout=120 -rs $PYTEST_ARGS
+          code=$?
+          echo "pytest exit code: $code"
+          exit $code
