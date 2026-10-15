@@ -1,0 +1,4 @@
+# Инструменты релизной сборки (CI ставит их из requirements.lock).
+# Pillow — генерация .ico/.icns из assets/icon.png.
+pyinstaller==6.19.0
+pillow

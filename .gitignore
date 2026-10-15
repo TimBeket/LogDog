@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.spec
+!LogDog.spec
+
+# Virtual Environment
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# PyInstaller
+*.manifest
+*.spec.bak
+
+# App Data (generated, stored in user AppData)
+settings.ini
+filter_history.txt
+logdog_diagnostic.log
+
+# Test & Coverage
+htmlcov/
+.coverage
+.coverage.*
+.pytest_cache/

@@ -1,0 +1,8 @@
+# Только настройки pytest. Зависимости — в requirements*.txt (CI ставит из
+# requirements-lock.txt), версия — из тега релиза (core/version.py).
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = []
+python_functions = ["test_*"]
+filterwarnings = ["ignore::DeprecationWarning"]

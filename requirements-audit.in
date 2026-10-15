@@ -1,0 +1,4 @@
+# pip-audit для проверки requirements-lock.txt в release.yml — тоже по хешам,
+# чтобы сам проверяющий не ставился непроверенным. Перегенерировать:
+#   uv pip compile requirements-audit.in --universal --python-version 3.12 --generate-hashes --output-file requirements-audit.txt
+pip-audit

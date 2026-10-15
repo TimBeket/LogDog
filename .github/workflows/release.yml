@@ -1,0 +1,274 @@
+name: Release
+
+# Сборка запускается только по тегу версии или вручную: раннеры macOS и Windows
+# расходуют бесплатные минуты в 10 и 2 раза быстрее Linux, поэтому на каждый push
+# собирать незачем. (В открытом репозитории минуты стандартных раннеров
+# бесплатны, но лишние сборки всё равно ни к чему.)
+#
+# Порядок: prepare (черновик релиза с текстом из CHANGELOG.md) → build (три ОС
+# параллельно, каждая докладывает свой файл и .sha256 в черновик) → publish
+# (latest.json для проверки обновлений в программе, снятие черновика).
+# Программа видит новую версию только после publish — пока сборка идёт,
+# релиз — черновик, и `releases/latest` указывает на предыдущий.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Версия для тестовой сборки (например v0.0.1-test) — публикуется как pre-release'
+        required: true
+
+# Права выдаются каждой задаче отдельно (contents: write — только там, где
+# работа с релизом), по умолчанию — никаких.
+permissions: {}
+
+env:
+  PYTHON_VERSION: '3.12'
+  APP_NAME: LogDog
+  TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.version }}
+
+jobs:
+  # Черновик создаётся заранее — сборки по ходу дела докладывают в него файлы
+  # (а не в артефакты Actions: у тех квота хранилища, у вложений релиза — нет).
+  # Раздел CHANGELOG.md проверяется здесь, до сборок: без описания версии тег
+  # падает сразу, не тратя минуты macOS/Windows.
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # создание черновика релиза
+    steps:
+      # TAG при ручном запуске — произвольный текст из формы, и он попадает в
+      # команды и имена файлов всех задач. Проверяем формат до всего остального;
+      # build и publish зависят от prepare и без этой проверки не стартуют.
+      - name: Проверка формата версии
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+(\.[0-9]+)*(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Недопустимая версия: нужно vX.Y или vX.Y-суффикс (например v0.0.1-test)"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # Известные уязвимости в зафиксированных зависимостях (все три ОС —
+      # requirements-lock.txt универсальный) — здесь, до дорогих сборок.
+      # Сами пакеты не ставятся: --disable-pip сверяет точные версии из файлов с
+      # базой уязвимостей PyPI; ставится только pip-audit (тоже по хешам).
+      # Если у уязвимости ещё нет исправленной версии, а выпускать надо —
+      # временно добавить `--ignore-vuln <ID>` с комментарием, почему.
+      - name: Проверка зависимостей (pip-audit)
+        run: |
+          python -m venv "$RUNNER_TEMP/audit"
+          "$RUNNER_TEMP/audit/bin/python" -m pip install --require-hashes -r requirements-audit.txt
+          "$RUNNER_TEMP/audit/bin/pip-audit" --progress-spinner off --disable-pip --require-hashes \
+            -r requirements-lock.txt -r requirements-audit.txt
+
+      - name: Черновик релиза
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IS_TAG: ${{ github.ref_type == 'tag' }}
+        run: |
+          version="${TAG#v}"
+          if [ "$IS_TAG" = "true" ]; then
+            python .github/scripts/release.py notes "$version" notes.md
+            prerelease=""
+          else
+            python .github/scripts/release.py notes "$version" notes.md --allow-missing
+            prerelease="--prerelease"
+          fi
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft $prerelease \
+                 --title "$APP_NAME $TAG" --notes-file notes.md --target "$GITHUB_SHA"
+
+  build:
+    needs: prepare
+    permissions:
+      contents: write  # загрузка файлов в черновик
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+          - os: macos-latest
+            platform: macos
+          - os: ubuntu-latest
+            platform: linux
+    runs-on: ${{ matrix.os }}
+    # Без потолка зависший тест висит до 6 часов и жжёт минуты.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # core/version.py в репозитории — дефолт "0.0.0-dev" для запуска из
+      # исходников; здесь подставляем реальный номер из тега перед сборкой,
+      # чтобы core/updater.py мог сравнить версию с последним релизом.
+      # Тут же — имя файла релиза с версией (ASSET, без расширения):
+      # LogDog-1.1-windows.zip. Суффиксы -windows.zip/-macos.zip/-linux.AppImage
+      # ждёт .github/scripts/release.py при сборке latest.json.
+      - name: Версия из тега в core/version.py
+        shell: python
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          import os
+          tag = os.environ["TAG"]
+          version = tag[1:] if tag.startswith("v") else tag
+          with open("core/version.py", "w", encoding="utf-8") as f:
+              f.write(f'VERSION = "{version}"\n')
+          # Числовая версия для свойств Setup.exe (Inno Setup требует a.b.c.d)
+          numbers = [p for p in version.split("-")[0].split(".") if p.isdigit()][:4]
+          numeric = ".".join(numbers + ["0"] * (4 - len(numbers)))
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+              f.write(f'ASSET={os.environ["APP_NAME"]}-{version}-{os.environ["PLATFORM"]}\n')
+              f.write(f'VERSION={version}\nNUMVER={numeric}\n')
+
+      # Headless Qt для тестов и сама Qt-сборка PyInstaller нуждаются в
+      # системных библиотеках, которых на голом ubuntu-latest нет.
+      - name: Системные зависимости (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1 libegl1 libxkbcommon0 libdbus-1-3 libfontconfig1
+
+      # Точные версии с SHA-256 из requirements-lock.txt (там же PyInstaller и
+      # Pillow для иконок): сборка повторяема, а подменённый на PyPI пакет не
+      # пройдёт проверку хеша. pip не обновляем — свежий pip с PyPI ставился бы
+      # как раз без проверки; версии из setup-python хватает.
+      - name: Зависимости Python
+        run: python -m pip install --require-hashes -r requirements-lock.txt
+
+      - name: Тесты
+        env:
+          QT_QPA_PLATFORM: offscreen
+        # faulthandler_timeout: если тест повис — через 120 с в логе появится стек
+        # всех потоков, а не просто тишина до отмены.
+        run: python -m pytest -q -o faulthandler_timeout=120
+
+      # .ico — все размеры, иначе в мелких видах (панель задач, список
+      # файлов) Windows может показать стандартную иконку вместо нашей.
+      - name: Генерация иконки (.ico, Windows)
+        if: runner.os == 'Windows'
+        shell: python
+        run: |
+          from PIL import Image
+          Image.open("assets/icon.png").save("assets/icon.ico", sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+
+      - name: Генерация иконки (.icns, macOS)
+        if: runner.os == 'macOS'
+        shell: python
+        run: |
+          from PIL import Image
+          Image.open("assets/icon.png").save("assets/icon.icns")
+
+      - name: Сборка (PyInstaller, LogDog.spec)
+        run: pyinstaller --noconfirm --distpath dist LogDog.spec
+
+      # Windows: архив папки целиком (LogDog/LogDog.exe + _internal) —
+      # именно такую раскладку ждёт core/update_install.py (stage_windows).
+      - name: Упаковка папки в portable-zip (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/LogDog -DestinationPath "${env:ASSET}-portable.zip"
+
+      # Установщик — Inno Setup 6, он уже есть на windows-раннерах GitHub
+      # (runner-images), ставить его отдельно не нужно. Сборка и проверка —
+      # в .github/scripts/*.ps1: их же запускает windows-installer-test.yml.
+      - name: Установщик (Windows, Inno Setup)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./.github/scripts/build-windows-installer.ps1
+
+      # Проверка установщика на чистом раннере: установка, обновление поверх
+      # (одна запись в «Установленных приложениях», а не две), удаление.
+      # Ловит сломанный .iss до того, как сборка дойдёт до пользователей.
+      - name: Проверка установщика (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./.github/scripts/test-windows-installer.ps1
+
+      - name: Упаковка .app в zip (macOS)
+        if: runner.os == 'macOS'
+        run: ditto -c -k --sequesterRsrc --keepParent dist/LogDog.app "$ASSET.zip"
+
+      # AppImage — единый переносимый файл; внутри — папка сборки целиком.
+      # Обновление на Linux — атомарная замена этого файла (update_install.py).
+      # appimagetool и runtime (загрузчик в начале каждого AppImage, попадает в
+      # файл, который скачают пользователи) — конкретные релизы с проверкой
+      # SHA-256, а не плавающий `continuous`: иначе в сборку молча попадает то,
+      # что выложено туда сегодня. Без --runtime-file appimagetool сам скачал
+      # бы последний runtime без проверки. Обновляя версии, пересчитать суммы.
+      - name: Упаковка в AppImage (Linux)
+        if: runner.os == 'Linux'
+        env:
+          APPIMAGETOOL_URL: https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          APPIMAGETOOL_SHA256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+          RUNTIME_URL: https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
+          RUNTIME_SHA256: 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
+        run: |
+          wget -q -O appimagetool-x86_64.AppImage "$APPIMAGETOOL_URL"
+          wget -q -O runtime-x86_64 "$RUNTIME_URL"
+          echo "$APPIMAGETOOL_SHA256  appimagetool-x86_64.AppImage" | sha256sum -c -
+          echo "$RUNTIME_SHA256  runtime-x86_64" | sha256sum -c -
+          chmod +x appimagetool-x86_64.AppImage
+          mkdir -p AppDir/usr/lib
+          cp -r dist/LogDog AppDir/usr/lib/logdog
+          cp packaging/logdog.desktop AppDir/
+          cp assets/icon.png AppDir/logdog.png
+          ln -s logdog.png AppDir/.DirIcon
+          cp packaging/AppRun AppDir/AppRun
+          chmod +x AppDir/AppRun
+          ./appimagetool-x86_64.AppImage --appimage-extract-and-run --runtime-file runtime-x86_64 AppDir "$ASSET.AppImage"
+
+      # SHA-256 — рядом файлом .sha256 (уходит в релиз вместе с архивом);
+      # из них publish собирает latest.json, по сумме программа проверяет
+      # скачанное обновление перед установкой.
+      - name: Контрольная сумма
+        shell: bash
+        run: |
+          # Файлы сборки этой ОС: Windows — setup.exe и portable.zip, macOS —
+          # .zip, Linux — .AppImage. Каждому — свой .sha256.
+          for f in "$ASSET"-setup.exe "$ASSET"-portable.zip "$ASSET".zip "$ASSET".AppImage; do
+            [ -f "$f" ] || continue
+            python -c "import hashlib,sys; p=sys.argv[1]; h=hashlib.sha256(open(p,'rb').read()).hexdigest(); open(p+'.sha256','w').write(h+'  '+p+'\n'); print('SHA-256', h, p)" "$f"
+          done
+
+      - name: Загрузка в черновик релиза
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "$ASSET"*.* --clobber
+
+  # Релиз публикуется, только когда собрались ВСЕ три платформы — иначе
+  # остался бы опубликованный релиз с частью файлов, а программы на
+  # недостающей ОС получили бы обновление, которое нечем поставить.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # latest.json и снятие черновика
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: latest.json и публикация
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.sha256' --dir sums
+          python .github/scripts/release.py manifest "${TAG#v}" "$TAG" "$GITHUB_REPOSITORY" sums latest.json
+          gh release upload "$TAG" latest.json --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false

@@ -1,0 +1,5 @@
+#!/bin/sh
+# AppRun для AppImage LogDog: внутри AppImage лежит папка сборки PyInstaller
+# (usr/lib/logdog), запускаем из неё программу.
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/usr/lib/logdog/LogDog" "$@"

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=LogDog
+Comment=Логи iOS-устройств и Unity-игр для QA
+Exec=LogDog
+Icon=logdog
+Categories=Development;Utility;
+Terminal=false
+StartupWMClass=LogDog

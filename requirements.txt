@@ -1,0 +1,6 @@
+# Зависимости программы (для разработки: pip install -r requirements.txt).
+# CI ставит не отсюда, а из requirements-lock.txt — точные версии с SHA-256;
+# после правки этого файла его надо перегенерировать (команда — в requirements-lock.in).
+PySide6>=6.6.0
+pymobiledevice3>=2.48.0
+requests>=2.31.0

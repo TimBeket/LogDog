@@ -1,0 +1,35 @@
+# Обновления того, что зафиксировано по SHA и хешам, — иначе пины только
+# устаревают. Раз в неделю, по одному PR на экосистему (группы), чтобы не
+# получать по PR на каждый из ~100 пакетов. cooldown — брать только версии,
+# вышедшие неделю назад и раньше: свежеопубликованную вредоносную версию
+# обычно успевают заметить и отозвать. На обновления безопасности не влияет.
+version: 2
+updates:
+  # actions/* в .github/workflows закреплены по SHA коммита с комментарием
+  # `# vX.Y.Z` — Dependabot обновляет и SHA, и комментарий.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ['*']
+
+  # Экосистема uv (а не pip): только она умеет пересобирать файлы
+  # `uv pip compile` — requirements-lock.txt / requirements-audit.txt из .in с
+  # теми же флагами (--universal, --generate-hashes), что в их шапке. Связь
+  # «X.in → X.txt» Dependabot находит по имени, поэтому выход — .txt, а не .lock.
+  # lockfile-only: диапазоны `>=` в requirements*.txt не трогать, поднимать
+  # только зафиксированные версии.
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    versioning-strategy: lockfile-only
+    groups:
+      python:
+        patterns: ['*']

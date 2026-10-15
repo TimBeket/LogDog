@@ -1,0 +1,9 @@
+# Вход для requirements-lock.txt — зафиксированных (с SHA-256) версий, из
+# которых CI ставит зависимости. Сами зависимости правятся в requirements*.txt,
+# после правки — перегенерировать (uv: `pip install uv`):
+#   uv pip compile requirements-lock.in --universal --python-version 3.12 --generate-hashes --output-file requirements-lock.txt
+# --universal — один файл на Windows/macOS/Linux (платформенные пакеты с маркерами).
+# Поднять все версии — тот же вызов с --upgrade.
+-r requirements.txt
+-r requirements-test.txt
+-r requirements-build.txt
