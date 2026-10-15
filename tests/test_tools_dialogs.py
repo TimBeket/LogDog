@@ -1,5 +1,6 @@
 """Окна инструментов без устройства: список приложений, язык, профили, .ipa,
 доступность карточек и перетаскивание .ipa."""
+import time
 from datetime import datetime, timedelta, timezone
 
 from PySide6.QtCore import QMimeData, QUrl
@@ -121,3 +122,19 @@ def test_cards_lose_hover_when_a_dialog_blocks_the_window(qtbot):
     card.setAttribute(Qt.WA_UnderMouse, True)   # мышь была над карточкой, по ней щёлкнули
     QApplication.sendEvent(win, QEvent(QEvent.WindowBlocked))  # открылось модальное окно
     assert not card.testAttribute(Qt.WA_UnderMouse)
+
+
+def test_closing_app_list_stops_icon_loader(qtbot, monkeypatch):
+    # окно удаляют закрытием, не через done(): поток иконок всё равно должен остановиться
+    from transports import device_tools
+    monkeypatch.setattr(device_tools, "HAS_PYMOBILEDEVICE3", True)
+    def slow_run(self):  # как на Windows без службы Apple: долго ждёт подключения
+        while self._is_running:
+            time.sleep(0.01)
+    monkeypatch.setattr(device_tools.IconLoader, "run", slow_run)
+    dlg = AppListDialog(APPS, serial="SERIAL")
+    qtbot.addWidget(dlg)
+    loader = dlg._icon_loader
+    qtbot.waitUntil(loader.isRunning)
+    dlg.close()
+    assert dlg._icon_loader is None and not loader.isRunning()

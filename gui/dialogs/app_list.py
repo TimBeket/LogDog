@@ -317,7 +317,7 @@ class AppListDialog(QDialog):
         self._on_search_changed(self.search_input.text())
         self._set_status(f"Удалено: {bundle_id}")
 
-    def done(self, result: int):
+    def _stop_workers(self):
         if self._icon_loader is not None:
             self._icon_loader.stop()
             self._icon_loader.quit()
@@ -327,4 +327,14 @@ class AppListDialog(QDialog):
                 self._icon_loader.wait()
             self._icon_loader = None
         self._tasks.stop_all()
+
+    def done(self, result: int):
+        self._stop_workers()
         super().done(result)
+
+    def closeEvent(self, event):
+        # close() не показанного окна не доходит до done(), а окно, удалённое
+        # с работающим потоком иконок, роняет процесс (на Windows поток ещё
+        # ждёт usbmux, когда окно уже удаляют)
+        self._stop_workers()
+        super().closeEvent(event)
