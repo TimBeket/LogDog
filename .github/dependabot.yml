@@ -3,12 +3,15 @@
 # получать по PR на каждый из ~100 пакетов. cooldown — брать только версии,
 # вышедшие неделю назад и раньше: свежеопубликованную вредоносную версию
 # обычно успевают заметить и отозвать. На обновления безопасности не влияет.
+# PR идут в dev (master = последний релиз). Исправления уязвимостей
+# (security updates) GitHub всё равно открывает в ветку по умолчанию — master.
 version: 2
 updates:
   # actions/* в .github/workflows закреплены по SHA коммита с комментарием
   # `# vX.Y.Z` — Dependabot обновляет и SHA, и комментарий.
   - package-ecosystem: github-actions
     directory: /
+    target-branch: dev
     schedule:
       interval: weekly
     cooldown:
@@ -25,6 +28,7 @@ updates:
   # только зафиксированные версии.
   - package-ecosystem: uv
     directory: /
+    target-branch: dev
     schedule:
       interval: weekly
     cooldown:
