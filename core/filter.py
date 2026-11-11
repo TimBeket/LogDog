@@ -256,6 +256,7 @@ class LogFilter:
         self.filter_text = ""
         self.tokens: List[str] = []
         self.rpn: List[str] = []
+        self._program: list = []   # rpn, где условия заранее разобраны в функции
 
     def set_filter(self, filter_text: str):
         """Устанавливает текст фильтра и преобразует его в обратную польскую нотацию."""
@@ -272,6 +273,10 @@ class LogFilter:
         else:
             self.tokens = []
             self.rpn = []
+        # Фильтр применяется к каждой из ~100 тыс. записей при каждой смене —
+        # разбираем условия один раз здесь, а не на каждую запись.
+        self._program = [t.upper() if t.upper() in ('AND', 'OR', 'NOT') else self._compile_operand(t)
+                         for t in self.rpn]
 
     def _tokenize(self, s: str) -> List[str]:
         return [text for text, _, _ in tokenize_with_positions(s)]
@@ -314,53 +319,52 @@ class LogFilter:
         else:
             props = self._extract_props_from_block(block_or_props)
         try:
-            res = self._eval_rpn(self.rpn, props)
-            return res
+            return self._run(props)
         except Exception:
             return True
 
-    def _eval_rpn(self, rpn: List[str], props: dict) -> bool:
+    def _run(self, props: dict) -> bool:
         stack: List[bool] = []
-        for token in rpn:
-            up = token.upper()
-            if up == 'AND':
-                b = stack.pop() if stack else False
-                a = stack.pop() if stack else False
-                stack.append(a and b)
-            elif up == 'OR':
-                b = stack.pop() if stack else False
-                a = stack.pop() if stack else False
-                stack.append(a or b)
-            elif up == 'NOT':
-                a = stack.pop() if stack else False
-                stack.append(not a)
+        push, pop = stack.append, stack.pop
+        for op in self._program:
+            if op == 'AND':
+                b = pop() if stack else False
+                a = pop() if stack else False
+                push(a and b)
+            elif op == 'OR':
+                b = pop() if stack else False
+                a = pop() if stack else False
+                push(a or b)
+            elif op == 'NOT':
+                push(not (pop() if stack else False))
             else:
-                res = self._match_operand(token, props)
-                stack.append(res)
+                push(op(props))
         return stack[-1] if stack else True
 
-    def _match_operand(self, operand: str, props: dict) -> bool:
+    def _compile_operand(self, operand: str):
+        """Условие → функция(props) -> bool.
+
+        Не поле фильтра (`Exception:`, `http://host`, `"a:b"`) — ищем текст
+        целиком, с двоеточием."""
         operand = operand.strip()
         if not operand:
-            return True
+            return lambda props: True
         fld, sep, val = operand.partition(':')
         fld = fld.strip().lower()
         if not sep or fld not in FIELDS:
-            # Не поле фильтра — ищем текст целиком, с двоеточием:
-            # `Exception:`, `http://host`, `"a:b"`.
             txt = self._unquote(operand).lower()
-            return txt in props.get('text', '')
+            return lambda props: txt in props.get('text', '')
         val = self._unquote(val.strip()).lower()
         if not val:
-            return True
+            return lambda props: True
         if fld == 'level':
             expected = LEVEL_ALIASES.get(val, val)
-            return props.get('level','info') == expected
+            return lambda props: props.get('level', 'info') == expected
         if fld == 'proc':
-            return val in (props.get('proc') or '')
+            return lambda props: val in (props.get('proc') or '')
         if fld == 'pid':
-            return val == (props.get('pid') or '')
-        return val in (props.get('text') or '')  # text:
+            return lambda props: val == (props.get('pid') or '')
+        return lambda props: val in (props.get('text') or '')
 
     def extract_props(self, block: str) -> dict:
         return self._extract_props_from_block(block)

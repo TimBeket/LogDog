@@ -758,21 +758,46 @@ class MainWindow(QMainWindow):
 
     _MARKER_TAG_PATTERN = re.compile(r'\[LogDog:Marker\]\s*')
 
-    def _render(self, entry: dict) -> tuple:
-        """(текст, цвет, жирный) записи на экране."""
-        raw = entry["raw"]
-        if entry["props"].get("level") == "marker":
-            return self._MARKER_TAG_PATTERN.sub("══ ", raw) + " ══", theme.tokens()["accent"], True
-        color = self._get_base_color(entry["props"]["level"])
-        match = self._COLOR_TAG_PATTERN.search(raw)
-        if match:
-            color_map = {
-                "red": "#ff5252", "green": "#00ff26", "magenta": "#ff00ff",
-                "teal": "#008080", "yellow": "#ffeb3b"
-            }
-            color = color_map.get(match.group(1).lower(), color)
-            raw = self._COLOR_TAG_PATTERN.sub('', raw).strip()
-        return self._SYSTEM_TAG_PATTERN.sub('[System]', raw), color, False
+    _TAG_COLORS = {"red": "#ff5252", "green": "#00ff26", "magenta": "#ff00ff",
+                   "teal": "#008080", "yellow": "#ffeb3b"}
+
+    def _view(self, entry: dict) -> tuple:
+        """(текст на экране, цвет из тега [LogDog:Red] или None, маркер, время, ключ повторов).
+        Зависит только от строки — считается один раз и хранится в записи:
+        фильтр перестраивает окно из всех записей, и регулярки на каждую
+        запись каждый раз заметно тормозили."""
+        view = entry.get("_view")
+        if view is None:
+            raw = entry["raw"]
+            marker = entry["props"].get("level") == "marker"
+            tag_color = None
+            if marker:
+                text = self._MARKER_TAG_PATTERN.sub("══ ", raw) + " ══"
+            else:
+                match = self._COLOR_TAG_PATTERN.search(raw)
+                if match:
+                    tag_color = self._TAG_COLORS.get(match.group(1).lower())
+                    raw = self._COLOR_TAG_PATTERN.sub('', raw).strip()
+                text = self._SYSTEM_TAG_PATTERN.sub('[System]', raw)
+            view = entry["_view"] = (text, tag_color, marker, entry_time(entry["raw"]),
+                                     None if marker else message_key(text))
+        return view
+
+    def _render(self, entry: dict, colors: dict = None) -> tuple:
+        """(текст, цвет, жирный) записи на экране. colors — кэш цветов уровней
+        на одну перерисовку (цвет из настроек — чтение файла настроек)."""
+        text, tag_color, marker, _when, _key = self._view(entry)
+        if marker:
+            return text, theme.tokens()["accent"], True
+        if tag_color:
+            return text, tag_color, False
+        level = entry["props"]["level"]
+        if colors is None:
+            return text, self._get_base_color(level), False
+        color = colors.get(level)
+        if color is None:
+            color = colors[level] = self._get_base_color(level)
+        return text, color, False
 
     def _insert_entries(self, entries) -> None:
         """В конец документа. Подряд идущие записи одного цвета — одной
@@ -783,9 +808,10 @@ class MainWindow(QMainWindow):
         collapse = self.btn_collapse.isChecked()
         items = []  # [текст, цвет, жирный, id, ключ, разница, повторов]
         last = self._last_shown
+        colors = {}
         for entry in entries:
-            text, color, bold = self._render(entry)
-            key = message_key(text) if collapse and not bold else None
+            text, color, bold = self._render(entry, colors)
+            key = entry["_view"][4] if collapse and not bold else None
             if key is not None and last is not None and last["key"] == key and last["color"] == color:
                 last["count"] += 1
                 if items:
@@ -793,7 +819,7 @@ class MainWindow(QMainWindow):
                 else:
                     self._bump_last_count(last)
                 continue
-            when = entry_time(entry["raw"])
+            when = entry["_view"][3]
             delta = int(when - last["time"]) if when is not None and last and last["time"] is not None else 0
             if not 0 < delta <= MAX_DELTA_SEC:
                 delta = 0

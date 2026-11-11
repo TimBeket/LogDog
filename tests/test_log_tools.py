@@ -132,3 +132,30 @@ def test_pause_counter_shows_queue_not_total(window):
     assert lines(window) == [] and window.lbl_line_count.text() == "Показано 0 · ещё 3 после паузы"
     window.btn_pause.setChecked(False)
     assert len(lines(window)) == 1 and window.lbl_line_count.text() == "Показано 1 из 3"
+
+
+
+def test_find_bar_follows_live_stream_with_autoscroll(window, qtbot):
+    """Поиск открыт, логи идут, автопрокрутка включена: совпадения досматриваются
+    с конца, а смена подсветки при прокрутке не роняет Qt (раньше был segfault)."""
+    from datetime import datetime, timedelta
+    from gui.tour_steps import _DEMO, _line
+
+    t0 = datetime(2026, 11, 5, 12, 0, 0)
+    raws = [_line(t0 + timedelta(milliseconds=20 * i), *_DEMO[i % len(_DEMO)][:2], f"{_DEMO[i % len(_DEMO)][2]} seq={i}")
+            for i in range(2500)]
+    window.resize(1000, 600)
+    window.show()
+    feed(window, raws[:2000])
+    fb = window.find_bar
+    fb.show()
+    fb.input.setText("a")
+    qtbot.wait(400)                       # пауза набора — поиск сам
+    found = fb.match_count
+    assert found > 0
+    window.chk_auto_scroll.setChecked(True)
+    for k in range(5):
+        feed(window, raws[2000 + k * 100:2100 + k * 100])
+        qtbot.wait(50)
+    qtbot.waitUntil(lambda: fb.match_count > found, timeout=2000)
+    assert fb.lbl_count.text().endswith(f"/{fb.match_count}")
