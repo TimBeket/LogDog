@@ -90,7 +90,8 @@ def test_frequent_crashes_suggest_muting(alerts):
     alerts.on_new_paths([f"/MyGame-2026-10-15-1607{i}0.ips" for i in range(3)])
     (toast,) = alerts.toasts
     assert "Часто падает" in toast.subtitle.text()
-    assert toast.mute_btn.text() == "Не показывать от MyGame"
+    assert toast.mute_btn.text() == "Больше не показывать"
+    assert "MyGame" in toast.mute_btn.toolTip()
 
 
 def test_mute_button_hides_and_remembers(alerts, temp_settings):
@@ -127,4 +128,4 @@ def test_toast_text_fits(alerts, name):
     right = toast.mute_btn.mapTo(toast, toast.mute_btn.rect().topRight()).x()
     assert toast.mute_btn.width() >= toast.mute_btn.sizeHint().width()     # кнопка не сжата
     assert right <= toast.width() - 8 - 24                                  # и не залезает под «×»
-    assert toast.mute_btn.text().startswith("Не показывать")
+    assert toast.mute_btn.text() == "Больше не показывать"   # имя — строкой выше, не обрезанное в кнопке

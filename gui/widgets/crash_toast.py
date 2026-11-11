@@ -67,7 +67,9 @@ class CrashToast(QFrame):
         self.download_btn.setProperty("variant", "primary")
         self.download_btn.clicked.connect(lambda: self.download_requested.emit(self.reports[-1]))
         buttons.addWidget(self.download_btn)
-        self.mute_btn = QPushButton()
+        # Без имени процесса: оно полностью строкой выше, а в кнопке длинное
+        # имя приходилось обрезать («…от com.apple.We…» — выглядит сломанным).
+        self.mute_btn = QPushButton("Больше не показывать")
         self.mute_btn.setProperty("variant", "ghost")
         self.mute_btn.setToolTip(f"Больше не уведомлять о крашах {report.process}. Вернуть — в Настройках.")
         self.mute_btn.clicked.connect(lambda: self.mute_requested.emit(report.process))
@@ -77,7 +79,6 @@ class CrashToast(QFrame):
         for b in (self.download_btn, self.mute_btn):
             b.setFocusPolicy(Qt.NoFocus)
             b.setCursor(Qt.PointingHandCursor)
-        self._fit_mute_text(_TEXT_WIDTH - self.download_btn.sizeHint().width() - buttons.spacing())
         row.addLayout(col, 1)
 
         close = QToolButton()
@@ -98,21 +99,6 @@ class CrashToast(QFrame):
         self._timer.start()
         self._shown = QElapsedTimer()
         self._shown.start()
-
-    def _fit_mute_text(self, room: int):
-        """«Не показывать от <процесс>», имя сокращено так, чтобы кнопка влезла
-        рядом со «Скачать» (раньше длинное имя обрезало кнопку); совсем не
-        влезает — просто «Не показывать», процесс виден выше и в подсказке."""
-        btn = self.mute_btn
-        btn.ensurePolished()
-        fm = btn.fontMetrics()
-        btn.setText("Не показывать")
-        padding = btn.sizeHint().width() - fm.horizontalAdvance(btn.text())
-        prefix = "Не показывать от "
-        name_room = room - padding - fm.horizontalAdvance(prefix)
-        name = fm.elidedText(self.report.process, Qt.ElideRight, name_room) if name_room > 0 else ""
-        if name and name != "…":
-            btn.setText(prefix + name)
 
     def _update_subtitle(self):
         extra = len(self.reports) - 1
