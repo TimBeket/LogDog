@@ -2,7 +2,6 @@ import re
 from collections import Counter, deque
 import bisect
 import itertools
-import time
 from datetime import datetime
 from pathlib import Path
 from PySide6.QtCore import QEvent, Qt, QTimer, QSize
@@ -35,6 +34,7 @@ from gui.widgets.log_view import LogView
 from gui.widgets.side_panel import SidePanel
 from gui.widgets.filter_history import FilterHistoryWidget
 from gui.widgets.find_bar import FindBar
+from gui.stepped import SteppedJob
 from transports.syslog_device import IosDevicePoller, IosSyslogReader
 from transports.unity_socket import USB_PREFIX, GameDiscovery, UnityTCPReader
 from utils.helpers import resource_path
@@ -113,15 +113,12 @@ class MainWindow(QMainWindow):
         self._watch_refresh.setSingleShot(True)
         self._watch_refresh.setInterval(300)
         self._watch_refresh.timeout.connect(lambda: self.side_panel.watch_page.refresh())
+        self._watch_job = SteppedJob(self, on_done=lambda: self.side_panel.watch_page.refresh())
         self._file_loader = None
         self._tour_state = None  # обучение идёт: отложенные логи и настройки
         self._tour = None
         # Перестроение окна по фильтру — порциями (см. _reapply_filter_to_history)
-        self._rebuild = None
-        self._rebuild_timer = QTimer(self)
-        self._rebuild_timer.setSingleShot(True)
-        self._rebuild_timer.setInterval(0)
-        self._rebuild_timer.timeout.connect(self._rebuild_step)
+        self._rebuild = SteppedJob(self, on_done=self._update_entry_count, on_step=self._update_entry_count)
         self._proc_counts = Counter()  # для подсказок proc: в поле фильтра
         
         self.transport_thread = None
@@ -742,7 +739,7 @@ class MainWindow(QMainWindow):
     def _save_logs(self):
         path, _ = QFileDialog.getSaveFileName(self, "Сохранить логи", "", "Log Files (*.log);;All Files (*)")
         if path:
-            self._finish_rebuild()
+            self._rebuild.finish()
             try:
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(self.log_display.toPlainText())
@@ -761,7 +758,7 @@ class MainWindow(QMainWindow):
             self.lbl_line_count.setText(f"Показано {shown:,} из {total:,}".replace(",", " "))
         else:
             self.lbl_line_count.setText(f"Логов: {total:,}".replace(",", " "))
-        if self._rebuild is not None:
+        if self._rebuild.running:
             self.lbl_line_count.setText("Применяю фильтр…")
 
     _COLOR_TAG_PATTERN = re.compile(r'\[LogDog:(Red|Green|Magenta|Teal|Yellow)\]', re.IGNORECASE)
@@ -910,21 +907,18 @@ class MainWindow(QMainWindow):
             return True  # маркеры шагов фильтр не скрывает
         return not self.filter_obj.filter_text or self.filter_obj.match(entry["props"])
 
-    REBUILD_STEP_SEC = 0.025   # столько окно может быть занято перестроением за раз
     REBUILD_CHUNK = 500        # записей за одну вставку
 
     def _reapply_filter_to_history(self, *_, restore_scroll: int = None):
         """Показать заново все сохранённые записи, подходящие под фильтр.
 
-        Порциями по ~25 мс между событиями окна: целиком 50 тыс. строк на
-        слабом компьютере — полторы секунды, всё это время окно не отвечало,
-        а при наборе фильтра это повторялось на каждой паузе. Теперь окно
-        отвечает, а новый фильтр прерывает недоделанное перестроение. Пока
-        идёт перестроение, на экране прежние логи, новые копятся в _entries
-        и дописываются в конце. Немного записей — всё за один раз, сразу."""
-        self._cancel_rebuild()
-        self._rebuild = self._rebuild_job(restore_scroll)
-        self._rebuild_step()
+        По шагам (gui/stepped.py): целиком 50 тыс. строк на слабом компьютере —
+        полторы секунды, всё это время окно не отвечало, а при наборе фильтра
+        это повторялось на каждой паузе. Теперь окно отвечает, а новый фильтр
+        прерывает недоделанное перестроение. Пока оно идёт, на экране прежние
+        логи, новые копятся в _entries и дописываются в конце. Немного
+        записей — всё за первый шаг, сразу."""
+        self._rebuild.start(self._rebuild_job(restore_scroll))
 
     def _rebuild_job(self, restore_scroll):
         """Генератор: каждый yield — можно отдать управление окну."""
@@ -942,57 +936,27 @@ class MainWindow(QMainWindow):
         shown.reverse()
         # 2. окно — заново, порциями (прежнее видно, пока не готово новое)
         self.log_display.setUpdatesEnabled(False)
-        self.log_display.clear()
-        self._entry_sizes.clear()
-        self._shown_ids.clear()
-        self._last_shown = None
-        for start in range(0, len(shown), self.REBUILD_CHUNK):
-            self._insert_entries(shown[start:start + self.REBUILD_CHUNK])
-            yield
-        # 3. логи, пришедшие за время перестроения (на паузе — покажутся после неё)
-        if not self.btn_pause.isChecked() and self._entries:
-            first = self._entries[0]["id"]
-            fresh = itertools.islice(self._entries, max(0, last_id + 1 - first), None)
-            self._insert_entries([e for e in fresh if matches(e)])
-            self._trim_display()
-        self.log_display.setUpdatesEnabled(True)
+        try:
+            self.log_display.clear()
+            self._entry_sizes.clear()
+            self._shown_ids.clear()
+            self._last_shown = None
+            for start in range(0, len(shown), self.REBUILD_CHUNK):
+                self._insert_entries(shown[start:start + self.REBUILD_CHUNK])
+                yield
+            # 3. логи, пришедшие за время перестроения (на паузе — покажутся после неё)
+            if not self.btn_pause.isChecked() and self._entries:
+                first = self._entries[0]["id"]
+                fresh = itertools.islice(self._entries, max(0, last_id + 1 - first), None)
+                self._insert_entries([e for e in fresh if matches(e)])
+                self._trim_display()
+        finally:   # и при отмене
+            self.log_display.setUpdatesEnabled(True)
         if self.chk_auto_scroll.isChecked():
             self._scroll_to_bottom()
         elif restore_scroll is not None:
             sb = self.log_display.verticalScrollBar()
             sb.setValue(min(restore_scroll, sb.maximum()))
-
-    def _rebuild_step(self):
-        job = self._rebuild
-        if job is None:
-            return
-        deadline = time.perf_counter() + self.REBUILD_STEP_SEC
-        try:
-            next(job)   # хотя бы шаг — даже если время уже вышло
-            while time.perf_counter() < deadline:
-                next(job)
-        except StopIteration:
-            self._rebuild = None
-            self._update_entry_count()
-            return
-        self._update_entry_count()
-        self._rebuild_timer.start()
-
-    def _finish_rebuild(self):
-        """Доделать перестроение сразу: нужно всё окно (сохранение, переход к записи)."""
-        job, self._rebuild = self._rebuild, None
-        self._rebuild_timer.stop()
-        if job is not None:
-            for _ in job:
-                pass
-            self._update_entry_count()
-
-    def _cancel_rebuild(self):
-        if self._rebuild is not None:
-            self._rebuild.close()
-            self._rebuild = None
-        self._rebuild_timer.stop()
-        self.log_display.setUpdatesEnabled(True)
 
     def _scroll_to_bottom(self):
         sb = self.log_display.verticalScrollBar()
@@ -1001,7 +965,7 @@ class MainWindow(QMainWindow):
         self._is_programmatic_scroll = False
 
     def _clear_logs(self):
-        self._cancel_rebuild()
+        self._rebuild.cancel()
         self.log_display.clear()
         self._entry_sizes.clear()
         self._shown_ids.clear()
@@ -1009,6 +973,7 @@ class MainWindow(QMainWindow):
         self._last_shown = None
         self._markers = 0
         self._pause_from_id = self._next_id
+        self._watch_job.cancel()
         self._watch.recount([])
         self.side_panel.watch_page.refresh()
         self.side_panel.details.show_entry(None)
@@ -1072,7 +1037,7 @@ class MainWindow(QMainWindow):
         self.side_panel.details.show_entry(entry, self._get_base_color(level) if entry else "")
 
     def _jump_to_entry(self, entry_id: int):
-        self._finish_rebuild()
+        self._rebuild.finish()
         entry = self._entry_by_id(entry_id)
         if entry is None:
             self.status_bar.showMessage("Эта запись уже вытеснена более новыми логами", 5000)
@@ -1099,8 +1064,8 @@ class MainWindow(QMainWindow):
 
     def _on_watch_changed(self):
         settings.set_watch_rules(self._watch.to_settings())
-        self._watch.recount(self._entries)
         self.side_panel.watch_page.refresh()
+        self._watch_job.start(self._watch.recount_job(self._entries))   # по шагам, только изменённые
 
     def _add_highlight(self, text: str, color: str):
         self.side_panel.highlights_page.add_rule(text, color)
@@ -1154,6 +1119,7 @@ class MainWindow(QMainWindow):
         self.btn_pause.setChecked(False)
         self.filter_input.clear()
         self._apply_filter(remember=False)
+        self._watch_job.cancel()
         self._watch.rules.clear()
         self._highlights.clear()
         self.log_display.set_highlights([])
@@ -1192,7 +1158,7 @@ class MainWindow(QMainWindow):
         self.filter_input.setText(state["filter"])
         self._apply_filter(remember=False)
         self._reapply_filter_to_history()
-        self._watch.recount(self._entries)
+        self._watch_job.start(self._watch.recount_job(self._entries))
         if state["held"]:
             self._on_blocks_processed(state["held"])
         self.btn_pause.setChecked(state["pause"])
@@ -1373,7 +1339,7 @@ class MainWindow(QMainWindow):
         self._entries.extend(blocks)
         if self._watch.rules and self._watch.feed(blocks) and self.side_panel.isVisible():
             self._watch_refresh.start()
-        if self.btn_pause.isChecked() or self._rebuild is not None:
+        if self.btn_pause.isChecked() or self._rebuild.running:
             # Перестроение по фильтру допишет их само, когда дойдёт до конца.
             # Пауза замораживает экран, но логи не теряются: покажутся после неё.
             self._update_entry_count()

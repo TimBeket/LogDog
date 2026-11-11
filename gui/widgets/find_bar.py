@@ -18,7 +18,6 @@
 документе + сколько символов срезано сверху с начала поиска (_shift), так
 срез начала не требует пересчитывать весь список.
 """
-import re
 from bisect import bisect_left, bisect_right
 
 from PySide6.QtCore import Qt, QTimer, QEvent, QSize, QPoint
@@ -27,17 +26,13 @@ from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QLineEdit, QToolButton, QLabel, QTextEdit
 )
 
+from core.text_search import find_all, utf16_len, utf16_positions
 from gui import icons, theme
 from gui.theme import theme_signals
 
-_ASTRAL = re.compile("[\U00010000-\U0010FFFF]")
 TYPING_DELAY_MS = 250      # пауза в наборе, после которой ищем
 RESCAN_DELAY_MS = 150      # как часто досматривать новые логи (не чаще)
 MAX_PAINTED = 300          # подсветок за раз: курсоры, см. выше; хватает на экран обычного поиска
-
-
-def _utf16_len(text: str) -> int:
-    return len(text) + len(_ASTRAL.findall(text))
 
 
 class FindBar(QWidget):
@@ -46,7 +41,7 @@ class FindBar(QWidget):
         self.setObjectName("FindBar")
         self._editor = editor
         self._search_text = ""
-        self._pattern = None
+        self._needle = None
         self._needle_len = 0       # длина совпадения в UTF-16
         self._starts = []          # виртуальные позиции совпадений, по возрастанию
         self._shift = 0
@@ -198,14 +193,13 @@ class FindBar(QWidget):
         self._shift = 0
         self._current = None
         if not text:
-            self._pattern = None
+            self._needle = None
             self._clear_highlights()
             self.lbl_count.setText("0/0")
             self._set_normal_style()
             return
-        self._pattern = re.compile(re.escape(text), re.IGNORECASE)
-        self._needle = text.lower()
-        self._needle_len = _utf16_len(text)
+        self._needle = text
+        self._needle_len = utf16_len(text)
         self._scan_from(0)
         if self._starts:
             self._current = self._starts[0]
@@ -226,30 +220,11 @@ class FindBar(QWidget):
             text = cursor.selectedText()   # переводы строк — U+2029, длина та же
         del self._starts[bisect_left(self._starts, start + self._shift):]
         base = start + self._shift
-        found = self._find_all(text)
-        if found and not text.isascii():
-            astral = [m.start() for m in _ASTRAL.finditer(text)]
-            if astral:
-                found = [i + bisect_left(astral, i) for i in found]
+        found = utf16_positions(text, find_all(text, self._needle))
         self._starts.extend(base + i for i in found)
 
-    def _find_all(self, text: str) -> list:
-        """Позиции (в символах Python) всех совпадений без учёта регистра.
-        lower() + str.find в разы быстрее регулярки с IGNORECASE (у неё нет
-        быстрого поиска подстроки). Если lower() меняет длину текста (редкие
-        буквы вроде «İ»), позиции бы съехали — тогда регулярка."""
-        low = text.lower()
-        if len(low) != len(text):
-            return [m.start() for m in self._pattern.finditer(text)]
-        needle, step, found = self._needle, len(self._needle), []
-        i = low.find(needle)
-        while i != -1:
-            found.append(i)
-            i = low.find(needle, i + step)
-        return found
-
     def _on_contents_change(self, pos: int, removed: int, added: int):
-        if self._pattern is None or not self.isVisible():
+        if self._needle is None or not self.isVisible():
             return
         if pos == 0 and added == 0 and removed > 0:
             # срезали старые логи сверху — их совпадения просто уходят
@@ -264,7 +239,7 @@ class FindBar(QWidget):
             self._rescan_timer.start()   # не перезапускаем: при потоке логов иначе не сработал бы никогда
 
     def _rescan(self):
-        if self._pattern is None:
+        if self._needle is None:
             return
         if self._dirty_from is not None:
             self._scan_from(max(0, self._dirty_from - self._shift))
@@ -318,7 +293,7 @@ class FindBar(QWidget):
 
     def _update_view(self):
         self._update_counter()
-        if self._pattern is not None and not self._starts:
+        if self._needle is not None and not self._starts:
             self._set_red_style()
         else:
             self._set_normal_style()
@@ -335,13 +310,13 @@ class FindBar(QWidget):
         return first.position(), bottom_block.position() + bottom_block.length()
 
     def _schedule_paint(self, *_):
-        if self._pattern is not None and not self._paint_timer.isActive():
+        if self._needle is not None and not self._paint_timer.isActive():
             self._paint_timer.start()
 
     def _paint_visible(self, *_):
         """Подсветить совпадения на экране. Вызывается и при прокрутке."""
         self._paint_timer.stop()
-        if self._pattern is None or not self.isVisible():
+        if self._needle is None or not self.isVisible():
             return
         start, end = self._visible_range()
         end += self._shift
@@ -362,11 +337,17 @@ class FindBar(QWidget):
             sel.cursor = self._cursor_for(self._current)
             sel.format.setBackground(QColor(255, 165, 0, 180))
             selections.append(sel)
-        self._editor.setExtraSelections([])   # старые курсоры — до новых, меньше живут одновременно
-        self._editor.setExtraSelections(selections)
+        self._set_selections(selections)
+
+    def _set_selections(self, selections):
+        if hasattr(self._editor, "set_selection_layer"):   # LogView: слои с подсветкой слов
+            self._editor.set_selection_layer("find", selections)
+        else:
+            self._editor.setExtraSelections([])   # старые курсоры — до новых, меньше живут одновременно
+            self._editor.setExtraSelections(selections)
 
     def _clear_highlights(self):
-        self._editor.setExtraSelections([])
+        self._set_selections([])
 
     def _update_counter(self):
         self.lbl_count.setText(f"{self.current_index + 1}/{len(self._starts)}")
@@ -402,7 +383,7 @@ class FindBar(QWidget):
         self._shift = 0
         self._current = None
         self._dirty_from = None
-        self._pattern = None
+        self._needle = None
         self._search_text = ""
         self.input.blockSignals(True)
         self.input.clear()

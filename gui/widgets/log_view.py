@@ -4,17 +4,27 @@
 в текст (и в копирование) не попадает. Разница хранится в userState первой
 строки (QTextBlock) записи: секунды от предыдущей показанной записи, -1 —
 продолжение записи или нет времени.
+
+Подсветка слов и совпадения поиска — extraSelections только видимых строк,
+пересчёт при прокрутке и новых логах. Раньше слова красил QSyntaxHighlighter:
+смена слов перекрашивала весь документ (50 тыс. строк — треть секунды на
+слабом компьютере), а каждая вставленная строка — вызов Python. Слои
+(слова снизу, поиск сверху) собираются здесь: setExtraSelections у окна один.
+У каждой подсветки свой QTextCursor — поэтому не больше MAX_WORD_SELECTIONS
+(почему много курсоров вредно — gui/widgets/find_bar.py).
 """
 from typing import List, Tuple
 
-from PySide6.QtCore import QRect, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QSyntaxHighlighter, QTextCharFormat, QTextCursor
-from PySide6.QtWidgets import QMenu, QPlainTextEdit, QWidget
+from PySide6.QtCore import QRect, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QPainter, QTextCursor
+from PySide6.QtWidgets import QMenu, QPlainTextEdit, QTextEdit, QWidget
 
 from core.log_entry import format_delta
+from core.text_search import find_all, utf16_len, utf16_positions
 from gui import theme
 
 HIGHLIGHT_COLORS = ["#F2C94C", "#6FCF97", "#56CCF2", "#BB6BD9", "#F2994A", "#EB5757"]
+MAX_WORD_SELECTIONS = 300
 
 
 class _Gutter(QWidget):
@@ -29,34 +39,6 @@ class _Gutter(QWidget):
         self.view.paint_gutter(event)
 
 
-class _Highlighter(QSyntaxHighlighter):
-    """Цветная заливка выбранных слов поверх цвета уровня (без учёта регистра)."""
-
-    def __init__(self, document):
-        super().__init__(document)
-        self.rules: List[Tuple[str, QTextCharFormat]] = []
-
-    def set_rules(self, rules: List[Tuple[str, str]]):
-        self.rules = []
-        for text, color in rules:
-            fmt = QTextCharFormat()
-            bg = QColor(color)
-            bg.setAlpha(110 if theme.current() == "Dark" else 90)
-            fmt.setBackground(bg)
-            self.rules.append((text.lower(), fmt))
-        self.rehighlight()
-
-    def highlightBlock(self, text: str):
-        if not self.rules:
-            return
-        low = text.lower()
-        for needle, fmt in self.rules:
-            start = low.find(needle)
-            while start != -1 and needle:
-                self.setFormat(start, len(needle), fmt)
-                start = low.find(needle, start + len(needle))
-
-
 class LogView(QPlainTextEdit):
     highlight_requested = Signal(str, str)   # текст, цвет
     watch_requested = Signal(str)            # текст для отслеживания
@@ -69,7 +51,16 @@ class LogView(QPlainTextEdit):
         self.setUndoRedoEnabled(False)
         self._gutter = _Gutter(self)
         self._show_gutter = False
-        self._highlighter = _Highlighter(self.document())
+        self._words: List[Tuple[str, QColor, int]] = []   # (слово, цвет, длина в UTF-16)
+        self._layers = {"words": [], "find": []}
+        # Не прямо из прокрутки: setExtraSelections изнутри valueChanged сразу
+        # после вставки логов ронял Qt (segfault) — следующим тактом.
+        self._words_timer = QTimer(self)
+        self._words_timer.setSingleShot(True)
+        self._words_timer.setInterval(15)
+        self._words_timer.timeout.connect(self._paint_words)
+        self.verticalScrollBar().valueChanged.connect(self._schedule_words)
+        self.document().contentsChange.connect(self._schedule_words)
         self.blockCountChanged.connect(self._update_margins)
         self.updateRequest.connect(self._on_update_request)
         self._update_margins()
@@ -97,6 +88,7 @@ class LogView(QPlainTextEdit):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._schedule_words()
         cr = self.contentsRect()
         self._gutter.setGeometry(QRect(cr.left(), cr.top(), self.gutter_width(), cr.height()))
 
@@ -124,7 +116,57 @@ class LogView(QPlainTextEdit):
     # ── Подсветка слов ───────────────────────────────────────────────────
 
     def set_highlights(self, rules: List[Tuple[str, str]]):
-        self._highlighter.set_rules(rules)
+        alpha = 110 if theme.current() == "Dark" else 90
+        self._words = []
+        for text, color in rules:
+            if text:
+                bg = QColor(color)
+                bg.setAlpha(alpha)
+                self._words.append((text, bg, utf16_len(text)))
+        self._paint_words()
+
+    def set_selection_layer(self, name: str, selections: list):
+        """Слой подсветки («words», «find»); показываются все слои, find — сверху."""
+        self._layers[name] = selections
+        self.setExtraSelections([])   # старые курсоры — до новых, меньше живут одновременно
+        self.setExtraSelections(self._layers["words"] + self._layers["find"])
+
+    def _schedule_words(self, *_):
+        if self._words and not self._words_timer.isActive():
+            self._words_timer.start()
+
+    def visible_blocks(self):
+        """Строки (QTextBlock), видимые сейчас."""
+        block = self.firstVisibleBlock()
+        top = self.blockBoundingGeometry(block).translated(self.contentOffset()).top()
+        bottom = self.viewport().height()
+        while block.isValid() and top <= bottom:
+            if block.isVisible():
+                yield block
+            top += self.blockBoundingRect(block).height()
+            block = block.next()
+
+    def _paint_words(self):
+        self._words_timer.stop()
+        selections = []
+        if self._words:
+            doc = self.document()
+            for block in self.visible_blocks():
+                text, base = block.text(), block.position()
+                for needle, bg, size in self._words:
+                    for start in utf16_positions(text, find_all(text, needle)):
+                        sel = QTextEdit.ExtraSelection()
+                        cursor = QTextCursor(doc)
+                        cursor.setPosition(base + start)
+                        cursor.setPosition(base + start + size, QTextCursor.KeepAnchor)
+                        sel.cursor = cursor
+                        sel.format.setBackground(bg)
+                        selections.append(sel)
+                if len(selections) >= MAX_WORD_SELECTIONS:
+                    del selections[MAX_WORD_SELECTIONS:]
+                    break
+        if selections or self._layers["words"]:
+            self.set_selection_layer("words", selections)
 
     # ── Меню по правой кнопке ────────────────────────────────────────────
 

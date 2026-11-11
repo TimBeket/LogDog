@@ -1,5 +1,6 @@
 """Окно логов: схлопывание повторов, маркеры, колонка времени, отслеживание, открытие файла."""
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QInputDialog
 
 from core.settings import settings
@@ -169,7 +170,7 @@ def _numbered(n, start=0, word="ping"):
 @pytest.fixture
 def small_steps(window, monkeypatch):
     """Перестроение — в несколько шагов даже на маленьких данных."""
-    monkeypatch.setattr(window, "REBUILD_STEP_SEC", 0.0)
+    monkeypatch.setattr(window._rebuild, "step_sec", 0.0)
     monkeypatch.setattr(window, "REBUILD_CHUNK", 100)
     window.btn_collapse.setChecked(False)
     return window
@@ -180,9 +181,9 @@ def test_filter_rebuild_runs_in_steps_and_matches_full_result(small_steps, qtbot
     feed(w, _numbered(1500) + _numbered(500, 1500, word="purchase"))
     w.filter_input.setText("purchase")
     w._apply_filter()
-    assert w._rebuild is not None                  # окно не занято целиком
+    assert w._rebuild.running                  # окно не занято целиком
     assert w.lbl_line_count.text() == "Применяю фильтр…"
-    qtbot.waitUntil(lambda: w._rebuild is None, timeout=5000)
+    qtbot.waitUntil(lambda: not w._rebuild.running, timeout=5000)
     shown = lines(w)
     assert len(shown) == 500 and all("purchase" in l for l in shown)
     assert shown[0].endswith("n=1500") and shown[-1].endswith("n=1999")
@@ -194,7 +195,7 @@ def test_logs_arriving_during_rebuild_are_appended_in_order(small_steps, qtbot):
     feed(w, _numbered(2000))
     w._reapply_filter_to_history()
     feed(w, _numbered(3, 2000))                    # пришли, пока окно перестраивается
-    qtbot.waitUntil(lambda: w._rebuild is None, timeout=5000)
+    qtbot.waitUntil(lambda: not w._rebuild.running, timeout=5000)
     shown = lines(w)
     assert len(shown) == 2003
     assert [l.rsplit("n=", 1)[1] for l in shown[-4:]] == ["1999", "2000", "2001", "2002"]
@@ -207,7 +208,7 @@ def test_new_filter_cancels_unfinished_rebuild(small_steps, qtbot):
     w._apply_filter()
     w.filter_input.setText("purchase")
     w._apply_filter()
-    qtbot.waitUntil(lambda: w._rebuild is None, timeout=5000)
+    qtbot.waitUntil(lambda: not w._rebuild.running, timeout=5000)
     assert lines(w) == ["Oct 15 17:00:00 iPhone-QA game[1] <Error>: purchase failed"]
 
 
@@ -219,3 +220,43 @@ def test_save_waits_for_rebuild(small_steps, tmp_path, monkeypatch):
     monkeypatch.setattr(mw.QFileDialog, "getSaveFileName", lambda *a, **k: (str(out), ""))
     w._save_logs()
     assert len(out.read_text(encoding="utf-8").splitlines()) == 2000
+
+
+def test_adding_watch_rule_counts_history_in_steps(small_steps, qtbot):
+    w = small_steps
+    w._watch_job.step_sec = 0.0
+    feed(w, _numbered(3000) + _numbered(2, 3000, word="purchase"))
+    w.side_panel.watch_page.add_expression("purchase")
+    assert w._watch_job.running                   # окно не занято целиком
+    qtbot.waitUntil(lambda: not w._watch_job.running, timeout=5000)
+    rule = w._watch.rules[0]
+    assert rule.count == 2 and rule.last_raw.endswith("n=3001")
+
+
+def test_word_highlights_paint_visible_lines_and_coexist_with_find(window, qtbot):
+    """Подсветка слов — только видимые строки (смена слов не перекрашивает
+    весь документ), при прокрутке — новые видимые; поиск рисуется поверх."""
+    window.resize(1000, 600)
+    window.show()
+    window.btn_collapse.setChecked(False)
+    feed(window, _numbered(3000))
+    view = window.log_display
+    view.set_highlights([["PING", "#F2C94C"]])          # без учёта регистра
+    words = view._layers["words"]
+    assert 0 < len(words) < 200
+    assert all(s.cursor.selectedText() == "ping" for s in words)
+    first = view.firstVisibleBlock().blockNumber()
+    assert {s.cursor.blockNumber() for s in words} <= set(range(first, first + 200))
+
+    view.verticalScrollBar().setValue(0)
+    qtbot.waitUntil(lambda: view._layers["words"] and view._layers["words"][0].cursor.blockNumber() < 100,
+                    timeout=2000)
+
+    fb = window.find_bar
+    fb.show()
+    fb.input.setText("n=1")
+    fb._search()
+    assert view._layers["find"] and view._layers["words"]
+    assert len(view.extraSelections()) == len(view._layers["words"]) + len(view._layers["find"])
+    view.set_highlights([])
+    assert view._layers["words"] == [] and len(view.extraSelections()) == len(view._layers["find"])

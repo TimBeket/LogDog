@@ -54,3 +54,32 @@ def test_details_ignore_pid_and_take_body():
     assert find_json(message_body(raw)) is None
     assert find_pairs(message_body(raw)) == [("a", "1"), ("b", "2")]
     assert find_json('ev {"a": 1}') == {"a": 1}
+
+
+def test_watch_recount_job_counts_only_changed_rules():
+    entries = [_entry(i, f"Oct 15 16:00:{i:02d} g[1] <Notice>: revenue {i}") for i in range(1, 6)]
+    watch = WatchList([("revenue", True)])
+    watch.recount(entries)
+    old = watch.rules[0]
+    old.count = 100                               # «уже посчитано» — не трогается
+    watch.add("revenue 3")
+    for _ in watch.recount_job(entries):
+        pass
+    assert old.count == 100
+    assert (watch.rules[1].count, watch.rules[1].last_entry_id) == (1, 3)
+
+
+def test_watch_recount_job_with_live_entries():
+    """Пришедшее во время пересчёта считает feed, пересчёт — только снимок; последнее — самое новое."""
+    entries = [_entry(i, f"Oct 15 16:00:{i:02d} g[1] <Notice>: revenue {i}") for i in range(1, 2001)]
+    watch = WatchList()
+    watch.add("revenue")
+    job = watch.recount_job(entries)
+    next(job)                                     # начал, не закончил
+    live = _entry(2001, "Oct 15 16:59:00 g[1] <Notice>: revenue live")
+    entries.append(live)
+    watch.feed([live])
+    for _ in job:
+        pass
+    rule = watch.rules[0]
+    assert (rule.count, rule.last_entry_id) == (2001, 2001)

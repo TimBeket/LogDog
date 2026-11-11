@@ -6,7 +6,7 @@
 фильтра. Без Qt.
 """
 from dataclasses import dataclass, field
-from typing import Iterable, List, Optional
+from typing import Iterable, Iterator, List, Optional
 
 from core.filter import LogFilter
 
@@ -18,6 +18,8 @@ class WatchRule:
     count: int = 0
     last_entry_id: Optional[int] = None
     last_raw: str = ""
+    # (выражение, включено), для которых count посчитан по истории; None — надо пересчитать
+    counted_as: Optional[tuple] = field(default=None, compare=False)
     _filter: LogFilter = field(default_factory=LogFilter, repr=False, compare=False)
 
     def __post_init__(self):
@@ -47,9 +49,37 @@ class WatchList:
         return changed
 
     def recount(self, entries: Iterable[dict]) -> None:
+        """Пересчитать все правила сразу."""
         for rule in self.rules:
+            rule.counted_as = None
+        for _ in self.recount_job(entries):
+            pass
+
+    def recount_job(self, entries: Iterable[dict]) -> Iterator[None]:
+        """Пересчитать по истории только изменённые правила (новые, включённые,
+        выключенные) — генератор для gui.stepped: 100 тыс. записей на каждое
+        правило — заметная пауза на слабом компьютере, а раньше при
+        добавлении правила заново считались все.
+
+        Записи, пришедшие во время пересчёта, учитывает feed: здесь — только
+        снимок, с конца, «последнее совпадение» — самое новое."""
+        rules = [r for r in self.rules if r.counted_as != (r.expression, r.enabled)]
+        for rule in rules:
             rule.reset()
-        self.feed(entries)
+        active = [r for r in rules if r.enabled and r.expression.strip()]
+        snapshot = list(entries)
+        for i in range(len(snapshot) - 1, -1, -1):
+            entry = snapshot[i]
+            for rule in active:
+                if rule._filter.match(entry["props"]):
+                    rule.count += 1
+                    if rule.last_entry_id is None:
+                        rule.last_entry_id = entry.get("id")
+                        rule.last_raw = entry["raw"]
+            if i % 1000 == 0:
+                yield
+        for rule in rules:
+            rule.counted_as = (rule.expression, rule.enabled)
 
     def add(self, expression: str) -> WatchRule:
         rule = WatchRule(expression.strip())
