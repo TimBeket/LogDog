@@ -25,6 +25,7 @@ parser.add_argument("--label", default="")
 parser.add_argument("--quick-find-only", action="store_true",
                     help="старые версии: без поиска одной буквы (там это минуты)")
 args = parser.parse_args()
+sys.stdout.reconfigure(encoding="utf-8")   # консоль Windows — cp1252, а таблица по-русски
 sys.path.insert(0, str(Path(args.code).resolve()))
 
 from PySide6.QtCore import QSettings, QTimer  # noqa: E402
