@@ -1,6 +1,8 @@
 import re
 from collections import Counter, deque
 import bisect
+import itertools
+import time
 from datetime import datetime
 from pathlib import Path
 from PySide6.QtCore import QEvent, Qt, QTimer, QSize
@@ -114,6 +116,12 @@ class MainWindow(QMainWindow):
         self._file_loader = None
         self._tour_state = None  # обучение идёт: отложенные логи и настройки
         self._tour = None
+        # Перестроение окна по фильтру — порциями (см. _reapply_filter_to_history)
+        self._rebuild = None
+        self._rebuild_timer = QTimer(self)
+        self._rebuild_timer.setSingleShot(True)
+        self._rebuild_timer.setInterval(0)
+        self._rebuild_timer.timeout.connect(self._rebuild_step)
         self._proc_counts = Counter()  # для подсказок proc: в поле фильтра
         
         self.transport_thread = None
@@ -734,6 +742,7 @@ class MainWindow(QMainWindow):
     def _save_logs(self):
         path, _ = QFileDialog.getSaveFileName(self, "Сохранить логи", "", "Log Files (*.log);;All Files (*)")
         if path:
+            self._finish_rebuild()
             try:
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(self.log_display.toPlainText())
@@ -752,6 +761,8 @@ class MainWindow(QMainWindow):
             self.lbl_line_count.setText(f"Показано {shown:,} из {total:,}".replace(",", " "))
         else:
             self.lbl_line_count.setText(f"Логов: {total:,}".replace(",", " "))
+        if self._rebuild is not None:
+            self.lbl_line_count.setText("Применяю фильтр…")
 
     _COLOR_TAG_PATTERN = re.compile(r'\[LogDog:(Red|Green|Magenta|Teal|Yellow)\]', re.IGNORECASE)
     _SYSTEM_TAG_PATTERN = re.compile(r'\[LogDog:System\]', re.IGNORECASE)
@@ -899,21 +910,89 @@ class MainWindow(QMainWindow):
             return True  # маркеры шагов фильтр не скрывает
         return not self.filter_obj.filter_text or self.filter_obj.match(entry["props"])
 
-    def _reapply_filter_to_history(self, *_):
-        """Показать заново все сохранённые записи, подходящие под фильтр."""
-        shown = [e for e in self._entries if self._matches(e)][-self.MAX_LOG_ENTRIES:]
+    REBUILD_STEP_SEC = 0.025   # столько окно может быть занято перестроением за раз
+    REBUILD_CHUNK = 500        # записей за одну вставку
+
+    def _reapply_filter_to_history(self, *_, restore_scroll: int = None):
+        """Показать заново все сохранённые записи, подходящие под фильтр.
+
+        Порциями по ~25 мс между событиями окна: целиком 50 тыс. строк на
+        слабом компьютере — полторы секунды, всё это время окно не отвечало,
+        а при наборе фильтра это повторялось на каждой паузе. Теперь окно
+        отвечает, а новый фильтр прерывает недоделанное перестроение. Пока
+        идёт перестроение, на экране прежние логи, новые копятся в _entries
+        и дописываются в конце. Немного записей — всё за один раз, сразу."""
+        self._cancel_rebuild()
+        self._rebuild = self._rebuild_job(restore_scroll)
+        self._rebuild_step()
+
+    def _rebuild_job(self, restore_scroll):
+        """Генератор: каждый yield — можно отдать управление окну."""
+        snapshot = list(self._entries)
+        last_id = snapshot[-1]["id"] if snapshot else self._next_id - 1
+        # 1. какие записи показать: последние MAX_LOG_ENTRIES подходящих
+        shown, matches = [], self._matches
+        for i in range(len(snapshot) - 1, -1, -1):
+            if matches(snapshot[i]):
+                shown.append(snapshot[i])
+                if len(shown) >= self.MAX_LOG_ENTRIES:
+                    break
+            if i % 2000 == 0:
+                yield
+        shown.reverse()
+        # 2. окно — заново, порциями (прежнее видно, пока не готово новое)
         self.log_display.setUpdatesEnabled(False)
-        try:
-            self.log_display.clear()
-            self._entry_sizes.clear()
-            self._shown_ids.clear()
-            self._last_shown = None
-            self._insert_entries(shown)
-        finally:
-            self.log_display.setUpdatesEnabled(True)
+        self.log_display.clear()
+        self._entry_sizes.clear()
+        self._shown_ids.clear()
+        self._last_shown = None
+        for start in range(0, len(shown), self.REBUILD_CHUNK):
+            self._insert_entries(shown[start:start + self.REBUILD_CHUNK])
+            yield
+        # 3. логи, пришедшие за время перестроения (на паузе — покажутся после неё)
+        if not self.btn_pause.isChecked() and self._entries:
+            first = self._entries[0]["id"]
+            fresh = itertools.islice(self._entries, max(0, last_id + 1 - first), None)
+            self._insert_entries([e for e in fresh if matches(e)])
+            self._trim_display()
+        self.log_display.setUpdatesEnabled(True)
         if self.chk_auto_scroll.isChecked():
             self._scroll_to_bottom()
+        elif restore_scroll is not None:
+            sb = self.log_display.verticalScrollBar()
+            sb.setValue(min(restore_scroll, sb.maximum()))
+
+    def _rebuild_step(self):
+        job = self._rebuild
+        if job is None:
+            return
+        deadline = time.perf_counter() + self.REBUILD_STEP_SEC
+        try:
+            next(job)   # хотя бы шаг — даже если время уже вышло
+            while time.perf_counter() < deadline:
+                next(job)
+        except StopIteration:
+            self._rebuild = None
+            self._update_entry_count()
+            return
         self._update_entry_count()
+        self._rebuild_timer.start()
+
+    def _finish_rebuild(self):
+        """Доделать перестроение сразу: нужно всё окно (сохранение, переход к записи)."""
+        job, self._rebuild = self._rebuild, None
+        self._rebuild_timer.stop()
+        if job is not None:
+            for _ in job:
+                pass
+            self._update_entry_count()
+
+    def _cancel_rebuild(self):
+        if self._rebuild is not None:
+            self._rebuild.close()
+            self._rebuild = None
+        self._rebuild_timer.stop()
+        self.log_display.setUpdatesEnabled(True)
 
     def _scroll_to_bottom(self):
         sb = self.log_display.verticalScrollBar()
@@ -922,6 +1001,7 @@ class MainWindow(QMainWindow):
         self._is_programmatic_scroll = False
 
     def _clear_logs(self):
+        self._cancel_rebuild()
         self.log_display.clear()
         self._entry_sizes.clear()
         self._shown_ids.clear()
@@ -992,6 +1072,7 @@ class MainWindow(QMainWindow):
         self.side_panel.details.show_entry(entry, self._get_base_color(level) if entry else "")
 
     def _jump_to_entry(self, entry_id: int):
+        self._finish_rebuild()
         entry = self._entry_by_id(entry_id)
         if entry is None:
             self.status_bar.showMessage("Эта запись уже вытеснена более новыми логами", 5000)
@@ -1292,7 +1373,8 @@ class MainWindow(QMainWindow):
         self._entries.extend(blocks)
         if self._watch.rules and self._watch.feed(blocks) and self.side_panel.isVisible():
             self._watch_refresh.start()
-        if self.btn_pause.isChecked():
+        if self.btn_pause.isChecked() or self._rebuild is not None:
+            # Перестроение по фильтру допишет их само, когда дойдёт до конца.
             # Пауза замораживает экран, но логи не теряются: покажутся после неё.
             self._update_entry_count()
             return
@@ -1313,11 +1395,7 @@ class MainWindow(QMainWindow):
 
     def repaint_all_logs(self, *_):
         """Перекрасить показанные логи (смена темы или цветов) с сохранением прокрутки."""
-        sb = self.log_display.verticalScrollBar()
-        position = sb.value()
-        self._reapply_filter_to_history()
-        if not self.chk_auto_scroll.isChecked():
-            sb.setValue(min(position, sb.maximum()))
+        self._reapply_filter_to_history(restore_scroll=self.log_display.verticalScrollBar().value())
 
     def _on_auto_scroll_toggled(self, state):
         """Scroll to bottom immediately when auto-scroll is enabled."""

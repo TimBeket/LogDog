@@ -208,3 +208,22 @@ def test_hide_clears_search(qapp):
     _append_line(editor, "foo")
     bar._rescan()
     assert bar.match_count == 0
+
+
+def test_matches_do_not_overlap(qapp):
+    editor, bar = _make_bar(qapp, "aaaa\n")
+    _search(bar, "aa")
+    assert bar.match_positions() == [0, 2]
+
+
+def test_text_where_lowercase_changes_length(qapp):
+    """«İ».lower() — два символа: позиции не должны съехать."""
+    editor, bar = _make_bar(qapp, "İİ error\nok error\n")
+    _search(bar, "error")
+    doc = editor.document()
+    for pos in bar.match_positions():
+        cursor = QTextCursor(doc)
+        cursor.setPosition(pos)
+        cursor.setPosition(pos + 5, QTextCursor.KeepAnchor)
+        assert cursor.selectedText() == "error"
+    assert bar.match_count == 2

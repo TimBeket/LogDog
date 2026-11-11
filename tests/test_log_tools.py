@@ -159,3 +159,63 @@ def test_find_bar_follows_live_stream_with_autoscroll(window, qtbot):
         qtbot.wait(50)
     qtbot.waitUntil(lambda: fb.match_count > found, timeout=2000)
     assert fb.lbl_count.text().endswith(f"/{fb.match_count}")
+
+
+def _numbered(n, start=0, word="ping"):
+    return [f"Oct 15 16:{(i // 60) % 60:02d}:{i % 60:02d} iPhone-QA game[1] <Notice>: {word} n={i}"
+            for i in range(start, start + n)]
+
+
+@pytest.fixture
+def small_steps(window, monkeypatch):
+    """Перестроение — в несколько шагов даже на маленьких данных."""
+    monkeypatch.setattr(window, "REBUILD_STEP_SEC", 0.0)
+    monkeypatch.setattr(window, "REBUILD_CHUNK", 100)
+    window.btn_collapse.setChecked(False)
+    return window
+
+
+def test_filter_rebuild_runs_in_steps_and_matches_full_result(small_steps, qtbot):
+    w = small_steps
+    feed(w, _numbered(1500) + _numbered(500, 1500, word="purchase"))
+    w.filter_input.setText("purchase")
+    w._apply_filter()
+    assert w._rebuild is not None                  # окно не занято целиком
+    assert w.lbl_line_count.text() == "Применяю фильтр…"
+    qtbot.waitUntil(lambda: w._rebuild is None, timeout=5000)
+    shown = lines(w)
+    assert len(shown) == 500 and all("purchase" in l for l in shown)
+    assert shown[0].endswith("n=1500") and shown[-1].endswith("n=1999")
+    assert w.lbl_line_count.text() == "Показано 500 из 2 000"
+
+
+def test_logs_arriving_during_rebuild_are_appended_in_order(small_steps, qtbot):
+    w = small_steps
+    feed(w, _numbered(2000))
+    w._reapply_filter_to_history()
+    feed(w, _numbered(3, 2000))                    # пришли, пока окно перестраивается
+    qtbot.waitUntil(lambda: w._rebuild is None, timeout=5000)
+    shown = lines(w)
+    assert len(shown) == 2003
+    assert [l.rsplit("n=", 1)[1] for l in shown[-4:]] == ["1999", "2000", "2001", "2002"]
+
+
+def test_new_filter_cancels_unfinished_rebuild(small_steps, qtbot):
+    w = small_steps
+    feed(w, _numbered(2000) + ["Oct 15 17:00:00 iPhone-QA game[1] <Error>: purchase failed"])
+    w.filter_input.setText("ping")
+    w._apply_filter()
+    w.filter_input.setText("purchase")
+    w._apply_filter()
+    qtbot.waitUntil(lambda: w._rebuild is None, timeout=5000)
+    assert lines(w) == ["Oct 15 17:00:00 iPhone-QA game[1] <Error>: purchase failed"]
+
+
+def test_save_waits_for_rebuild(small_steps, tmp_path, monkeypatch):
+    w = small_steps
+    feed(w, _numbered(2000))
+    w._reapply_filter_to_history()
+    out = tmp_path / "out.log"
+    monkeypatch.setattr(mw.QFileDialog, "getSaveFileName", lambda *a, **k: (str(out), ""))
+    w._save_logs()
+    assert len(out.read_text(encoding="utf-8").splitlines()) == 2000

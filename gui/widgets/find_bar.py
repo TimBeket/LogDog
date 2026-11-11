@@ -204,6 +204,7 @@ class FindBar(QWidget):
             self._set_normal_style()
             return
         self._pattern = re.compile(re.escape(text), re.IGNORECASE)
+        self._needle = text.lower()
         self._needle_len = _utf16_len(text)
         self._scan_from(0)
         if self._starts:
@@ -216,18 +217,36 @@ class FindBar(QWidget):
         """Досмотреть документ с начала строки, где позиция pos, до конца."""
         doc = self._editor.document()
         start = doc.findBlock(pos).position() if pos > 0 else 0
-        cursor = QTextCursor(doc)
-        cursor.setPosition(start)
-        cursor.movePosition(QTextCursor.End, QTextCursor.KeepAnchor)
-        text = cursor.selectedText()   # переводы строк — U+2029, длина та же
+        if start == 0:
+            text = doc.toPlainText()   # весь текст — так вдвое быстрее, длина та же
+        else:
+            cursor = QTextCursor(doc)
+            cursor.setPosition(start)
+            cursor.movePosition(QTextCursor.End, QTextCursor.KeepAnchor)
+            text = cursor.selectedText()   # переводы строк — U+2029, длина та же
         del self._starts[bisect_left(self._starts, start + self._shift):]
         base = start + self._shift
-        found = [m.start() for m in self._pattern.finditer(text)]
+        found = self._find_all(text)
         if found and not text.isascii():
             astral = [m.start() for m in _ASTRAL.finditer(text)]
             if astral:
                 found = [i + bisect_left(astral, i) for i in found]
         self._starts.extend(base + i for i in found)
+
+    def _find_all(self, text: str) -> list:
+        """Позиции (в символах Python) всех совпадений без учёта регистра.
+        lower() + str.find в разы быстрее регулярки с IGNORECASE (у неё нет
+        быстрого поиска подстроки). Если lower() меняет длину текста (редкие
+        буквы вроде «İ»), позиции бы съехали — тогда регулярка."""
+        low = text.lower()
+        if len(low) != len(text):
+            return [m.start() for m in self._pattern.finditer(text)]
+        needle, step, found = self._needle, len(self._needle), []
+        i = low.find(needle)
+        while i != -1:
+            found.append(i)
+            i = low.find(needle, i + step)
+        return found
 
     def _on_contents_change(self, pos: int, removed: int, added: int):
         if self._pattern is None or not self.isVisible():
