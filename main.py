@@ -24,7 +24,7 @@ if getattr(sys, "frozen", False) and sys.argv[1:2] == ["--apply-update"]:
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 from utils.helpers import resource_path
-from utils.logger import setup_logger, logger
+from utils.logger import describe_environment, setup_logger, logger
 from core import update_install
 from core.version import VERSION
 from core.settings import settings
@@ -42,6 +42,7 @@ if sys.platform == "win32" and not getattr(sys, "frozen", False):
 def main():
     setup_logger(debug_mode=True)
     logger.info("Starting LogDog %s...", VERSION)
+    logger.info("Environment: %s", describe_environment())
     if sys.argv[1:2] == [update_install.FINISH_ARG] and len(sys.argv) > 2:
         update_install.finish_update(sys.argv[2])
     if getattr(sys, "frozen", False):

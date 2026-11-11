@@ -2,6 +2,7 @@ import re
 from collections import Counter, deque
 import bisect
 import itertools
+import time
 from datetime import datetime
 from pathlib import Path
 from PySide6.QtCore import QEvent, Qt, QTimer, QSize
@@ -114,6 +115,14 @@ class MainWindow(QMainWindow):
         self._watch_refresh.setInterval(300)
         self._watch_refresh.timeout.connect(lambda: self.side_panel.watch_page.refresh())
         self._watch_job = SteppedJob(self, on_done=lambda: self.side_panel.watch_page.refresh())
+        # Сторож: окно не отвечало дольше секунды — в лог диагностики, сколько и
+        # в каком состоянии. Раньше по присланному логу нельзя было понять,
+        # что программа висла, — только жалоба на словах.
+        self._stall_last = time.monotonic()
+        self._stall_timer = QTimer(self)
+        self._stall_timer.setInterval(250)
+        self._stall_timer.timeout.connect(self._check_stall)
+        self._stall_timer.start()
         self._file_loader = None
         self._tour_state = None  # обучение идёт: отложенные логи и настройки
         self._tour = None
@@ -633,6 +642,7 @@ class MainWindow(QMainWindow):
             serial = self.device_combo.currentData()
             display_name = self.device_combo.currentText()
             if not serial: return
+            logger.info("Connect: iOS syslog, device …%s", serial[-6:])
             self.transport_thread = IosSyslogReader(serial, display_name)
             self._connected_serial = serial
             self._log_source = self._device_names.get(serial, display_name)
@@ -644,6 +654,7 @@ class MainWindow(QMainWindow):
                 settings.set_last_unity_ip(target)
             settings.set_last_unity_target(target)
             self._unity_stopped_by_user = False
+            logger.info("Connect: Unity %s", t.get("kind") or "?")
             self.transport_thread = UnityTCPReader(target, port_hint=settings.last_unity_port(target))
             self.transport_thread.port_found.connect(
                 lambda port, key=target: settings.set_last_unity_port(key, port))
@@ -664,6 +675,7 @@ class MainWindow(QMainWindow):
     def _disconnect(self):
         self.crash_alerts.stop()
         if self.transport_thread:
+            logger.info("Disconnect (entries=%d)", len(self._entries))
             # Disconnect all signals from the old thread to prevent stale delivery
             try:
                 self.transport_thread.lines_ready.disconnect()
@@ -910,6 +922,19 @@ class MainWindow(QMainWindow):
         cursor.setPosition(end_block.position() if end_block.isValid() else doc.characterCount() - 1,
                            QTextCursor.KeepAnchor)
         cursor.removeSelectedText()
+
+    STALL_LOG_SEC = 1.0
+
+    def _check_stall(self):
+        now = time.monotonic()
+        gap, self._stall_last = now - self._stall_last, now
+        # больше 5 минут — скорее сон компьютера, чем зависание
+        if self.STALL_LOG_SEC < gap < 300:
+            logger.warning(
+                "UI stalled for %.1f s (entries=%d, shown=%d, filter=%r, find=%r, paused=%s, rebuilding=%s)",
+                gap, len(self._entries), len(self._entry_sizes), self.filter_obj.filter_text,
+                self.find_bar.input.text() if self.find_bar.isVisible() else "", self.btn_pause.isChecked(),
+                self._rebuild.running)
 
     def _matches(self, entry: dict) -> bool:
         if entry["props"].get("level") == "marker":

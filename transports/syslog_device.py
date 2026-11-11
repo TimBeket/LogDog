@@ -95,6 +95,7 @@ class IosSyslogReader(BaseReader):
         super().__init__(parent)
         self.device_serial = device_serial
         self.display_name = display_name
+        self._lost_at = None   # когда пропала связь — в лог, через сколько вернулась
 
     def run(self):
         if not HAS_PYMOBILEDEVICE3:
@@ -119,11 +120,16 @@ class IosSyslogReader(BaseReader):
             lockdown = await create_using_usbmux(self.device_serial)
 
             async with SyslogService(lockdown) as syslog:
+                if self._lost_at is not None:
+                    logger.info("Syslog stream restored after %.0f s", time.monotonic() - self._lost_at)
+                    self._lost_at = None
                 self.state_changed.emit("streaming")
                 self.status_changed.emit(f"Сбор логов iOS ({self.display_name})")
                 await self._pump(syslog)
         except Exception as e:
             if self._is_running:
+                if self._lost_at is None:
+                    self._lost_at = time.monotonic()
                 logger.warning("Syslog connection lost: %s: %s", type(e).__name__, e)
                 self.state_changed.emit("waiting")
                 self.emit_system_message("Соединение с iOS потеряно. Переподключение...")
