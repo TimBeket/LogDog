@@ -33,3 +33,11 @@ def isolated_settings(monkeypatch, tmp_path):
     import gui.widgets.filter_history as filter_history
     monkeypatch.setattr(settings, "store", QSettings(str(tmp_path / "settings.ini"), QSettings.IniFormat))
     monkeypatch.setattr(filter_history, "get_app_data_dir", lambda: tmp_path)
+
+
+def pytest_unconfigure(config):
+    """Тесты кончились, а процесс не выходит (на Windows в CI раз висел до
+    таймаута в 20 минут) — через минуту стеки всех потоков в вывод и выход
+    с ошибкой: видно, что держит, и прогон не ждёт впустую."""
+    import faulthandler
+    faulthandler.dump_traceback_later(60, exit=True)
