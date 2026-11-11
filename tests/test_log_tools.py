@@ -260,3 +260,21 @@ def test_word_highlights_paint_visible_lines_and_coexist_with_find(window, qtbot
     assert len(view.extraSelections()) == len(view._layers["words"]) + len(view._layers["find"])
     view.set_highlights([])
     assert view._layers["words"] == [] and len(view.extraSelections()) == len(view._layers["find"])
+
+
+def test_save_suggests_name_with_device_and_remembers_folder(window, tmp_path, monkeypatch):
+    from pathlib import Path
+    window._on_devices_updated([{"serial": "abc", "name": "iPhone QA", "model": "iPhone 16"}])
+    window._log_source = window._device_names["abc"]   # как после подключения
+    asked = []
+
+    def fake_dialog(parent, title, start, filters):
+        asked.append(start)
+        return str(tmp_path / "mine.log"), ""
+
+    monkeypatch.setattr(mw.QFileDialog, "getSaveFileName", fake_dialog)
+    feed(window, [PING.format(1)])
+    window._save_logs()
+    assert Path(asked[0]).name.startswith("LogDog_iPhone-QA_") and asked[0].endswith(".log")
+    window._save_logs()
+    assert Path(asked[1]).parent == tmp_path        # в следующий раз — та же папка

@@ -37,7 +37,7 @@ from gui.widgets.find_bar import FindBar
 from gui.stepped import SteppedJob
 from transports.syslog_device import IosDevicePoller, IosSyslogReader
 from transports.unity_socket import USB_PREFIX, GameDiscovery, UnityTCPReader
-from utils.helpers import resource_path
+from utils.helpers import default_save_dir, log_file_name, resource_path
 from utils.logger import logger
 
 
@@ -128,6 +128,8 @@ class MainWindow(QMainWindow):
         self._is_connected = False
         self._link_state = None        # состояние связи от транспорта (BaseReader.state_changed)
         self._connected_serial = None  # к какому iPhone подключены (iOS)
+        self._device_names = {}        # серийный → имя iPhone (для имени файла логов)
+        self._log_source = ""          # откуда логи — в имя файла при сохранении
         self._ios_device_available = False
         # Уведомления о новых крашах, пока подключён iPhone (gui/crash_alerts.py):
         # start() в _connect, stop() в _disconnect, shutdown() в closeEvent.
@@ -526,6 +528,7 @@ class MainWindow(QMainWindow):
                 self._ios_device_available = False
             else:
                 for dev in devices:
+                    self._device_names[dev["serial"]] = dev["name"]
                     display_text = f"{dev['name']} ({dev['model']})" if dev.get("model") else dev["name"]
                     self.device_combo.addItem(display_text, dev["serial"])
                 
@@ -632,8 +635,11 @@ class MainWindow(QMainWindow):
             if not serial: return
             self.transport_thread = IosSyslogReader(serial, display_name)
             self._connected_serial = serial
+            self._log_source = self._device_names.get(serial, display_name)
         else:
             target = self._unity_target_string()
+            t = self._unity_target()
+            self._log_source = t.get("project") or t.get("device") or t.get("ip") or target
             if not target.startswith(USB_PREFIX):
                 settings.set_last_unity_ip(target)
             settings.set_last_unity_target(target)
@@ -737,8 +743,11 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(msg)
 
     def _save_logs(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Сохранить логи", "", "Log Files (*.log);;All Files (*)")
+        # Имя по умолчанию: LogDog_<iPhone или игра>_<дата>_<время>.log, в последней папке сохранения
+        start = Path(settings.last_save_dir() or default_save_dir()) / log_file_name(self._log_source, datetime.now())
+        path, _ = QFileDialog.getSaveFileName(self, "Сохранить логи", str(start), "Log Files (*.log);;All Files (*)")
         if path:
+            settings.set_last_save_dir(str(Path(path).parent))
             self._rebuild.finish()
             try:
                 with open(path, "w", encoding="utf-8") as f:
@@ -1088,6 +1097,7 @@ class MainWindow(QMainWindow):
                 return
             self._disconnect()
         self._clear_logs()
+        self._log_source = ""   # пересохранить открытый файл — просто LogDog_<дата>
         self._file_loader = LogFileLoader(path, self.filter_obj)
         self._file_loader.blocks_ready.connect(self._on_incoming_blocks)
         self._file_loader.finished_loading.connect(
