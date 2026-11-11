@@ -129,3 +129,22 @@ def test_toast_text_fits(alerts, name):
     assert toast.mute_btn.width() >= toast.mute_btn.sizeHint().width()     # кнопка не сжата
     assert right <= toast.width() - 8 - 24                                  # и не залезает под «×»
     assert toast.mute_btn.text() == "Больше не показывать"   # имя — строкой выше, не обрезанное в кнопке
+
+
+@pytest.mark.parametrize("point_size", [None, 13, 16])
+def test_toast_buttons_never_squeezed(alerts, point_size):
+    """Широкий шрифт или крупный масштаб (на Windows в CI кнопке не хватало 44 px):
+    кнопка «Больше не показывать» уходит под «Скачать», но не сжимается."""
+    if point_size:
+        font = alerts.window.font()
+        font.setPointSize(point_size)
+        alerts.window.setFont(font)
+    toast = alerts.show_toast(describe("/MyGame-2026-10-15-160659.ips"))
+    alerts.on_report(describe("/MyGame-2026-10-15-160700.ips"))   # 2-й и 3-й краш — кнопка становится заметной
+    alerts.on_report(describe("/MyGame-2026-10-15-160701.ips"))
+    toast.adjustSize()
+    for btn in (toast.download_btn, toast.mute_btn):
+        assert btn.width() >= btn.sizeHint().width()
+        assert btn.mapTo(toast, btn.rect().topRight()).x() <= toast.width() - 8 - 24
+    if point_size == 16:
+        assert toast.mute_btn.y() > toast.download_btn.y()          # во вторую строку
