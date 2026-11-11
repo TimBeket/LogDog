@@ -143,8 +143,12 @@ class FilterHistoryWidget(QWidget):
         except Exception as e:
             logger.error("Failed to save filter history: %r", e)
 
-    def add_filter(self, filter_text):
+    def add_filter(self, filter_text, replace=None):
+        """Наверх истории; replace — запись, которую этот фильтр заменяет
+        (недописанный вариант того же фильтра)."""
         if not filter_text.strip(): return
+        if replace and replace != filter_text and replace in self.history_items:
+            self.history_items.remove(replace)
         if filter_text in self.history_items:
             self.history_items.remove(filter_text)
         self.history_items.insert(0, filter_text)

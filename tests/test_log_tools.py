@@ -278,3 +278,47 @@ def test_save_suggests_name_with_device_and_remembers_folder(window, tmp_path, m
     assert Path(asked[0]).name.startswith("LogDog_iPhone-QA_") and asked[0].endswith(".log")
     window._save_logs()
     assert Path(asked[1]).parent == tmp_path        # в следующий раз — та же папка
+
+
+def _type_and_leave(w, text):
+    """Набрал (фильтр применился сам после паузы) и ушёл из поля без Enter."""
+    w.filter_input.setText(text)
+    w._apply_filter(remember=False)
+    w.filter_input.editingFinished.emit()
+
+
+def _type_and_enter(w, text):
+    w.filter_input.setText(text)
+    w._apply_filter()                       # returnPressed
+    w.filter_input.editingFinished.emit()   # Qt шлёт и его
+
+
+def test_unfinished_filter_does_not_litter_history(window):
+    """Пауза в наборе + клик в логи оставляли «proc:t» в истории рядом с полным фильтром."""
+    hist = window.filter_history_widget
+    hist.history_items.clear()
+    _type_and_leave(window, "proc:t")
+    _type_and_leave(window, "proc:trickycastle")
+    _type_and_leave(window, "proc:trickycastle(unityframework)")
+    assert hist.history_items == ["proc:trickycastle(unityframework)"]
+    _type_and_leave(window, "message: Appsf;")          # опечатка, потом исправил
+    _type_and_enter(window, "message: Appsflyer")
+    assert hist.history_items == ["message: Appsflyer", "proc:trickycastle(unityframework)"]
+
+
+def test_filter_confirmed_by_enter_is_kept(window):
+    hist = window.filter_history_widget
+    hist.history_items.clear()
+    _type_and_enter(window, "level:error")
+    _type_and_leave(window, "level:error OR crash")     # другой фильтр на основе прежнего
+    assert hist.history_items == ["level:error OR crash", "level:error"]
+    _type_and_leave(window, "pid:5")                     # совсем другой — отдельно
+    assert hist.history_items == ["pid:5", "level:error OR crash", "level:error"]
+
+
+def test_same_filter_edit():
+    from gui.main_window import same_filter_edit
+    assert same_filter_edit("proc:t", "proc:trickycastle")
+    assert same_filter_edit("message: Appsf;", "message: Appsflyer")
+    assert same_filter_edit("pro", "proc:x")
+    assert not same_filter_edit("proc:x", "pid:5")

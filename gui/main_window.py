@@ -1,6 +1,7 @@
 import re
 from collections import Counter, deque
 import bisect
+import os
 import itertools
 import time
 from datetime import datetime
@@ -81,6 +82,14 @@ def repaint_document_by_level(doc, color_for_level):
     cursor.endEditBlock()
 
 
+def same_filter_edit(old: str, new: str) -> bool:
+    """new — тот же фильтр, дописанный или поправленный (общее начало от 3
+    символов или всё более короткое): «proc:t» → «proc:trickycastle»,
+    «message: Appsf;» → «message: Appsflyer». Другой фильтр — «pid:5» после «proc:x»."""
+    common = len(os.path.commonprefix([old.lower(), new.lower()]))
+    return common >= min(3, len(old), len(new))
+
+
 class MainWindow(QMainWindow):
     """Main Application Window for LogDog."""
 
@@ -139,6 +148,7 @@ class MainWindow(QMainWindow):
         self._connected_serial = None  # к какому iPhone подключены (iOS)
         self._device_names = {}        # серийный → имя iPhone (для имени файла логов)
         self._log_source = ""          # откуда логи — в имя файла при сохранении
+        self._tentative_filter = None  # в истории без Enter — заменится, если его допишут
         self._ios_device_available = False
         # Уведомления о новых крашах, пока подключён iPhone (gui/crash_alerts.py):
         # start() в _connect, stop() в _disconnect, shutdown() в closeEvent.
@@ -225,7 +235,7 @@ class MainWindow(QMainWindow):
         self._filter_timer.timeout.connect(lambda: self._apply_filter(remember=False))
         self.filter_input.textChanged.connect(lambda _t: self._filter_timer.start())
         self.filter_input.returnPressed.connect(self._apply_filter)
-        self.filter_input.editingFinished.connect(self._remember_filter)
+        self.filter_input.editingFinished.connect(lambda: self._remember_filter(explicit=False))
         self.filter_input.setClearButtonEnabled(True)
         self._filter_search_action = self.filter_input.addAction(QIcon(), QLineEdit.LeadingPosition)
         self._filter_history_action = self.filter_input.addAction(QIcon(), QLineEdit.TrailingPosition)
@@ -734,12 +744,26 @@ class MainWindow(QMainWindow):
             self._reapply_filter_to_history()
             settings.set_last_filter(flt)
         if remember:
-            self._remember_filter()
+            self._remember_filter(explicit=True)
 
-    def _remember_filter(self):
+    def _remember_filter(self, explicit: bool):
+        """В историю — применённый фильтр. explicit — Enter или выбор из истории:
+        запись закреплена. Иначе (ушли из поля, не нажав Enter — фильтр ведь
+        применяется сам) — предварительная: если тот же фильтр потом дописали
+        или поправили, она заменяется, а не копится рядом. Раньше «proc:t»,
+        оставленное при паузе в наборе, оседало в истории мусором."""
         flt = self.filter_obj.filter_text
-        if flt and flt == self.filter_input.text().strip():
-            self.filter_history_widget.add_filter(flt)
+        if not flt or flt != self.filter_input.text().strip():
+            return
+        tentative = self._tentative_filter
+        if flt == tentative or (not explicit and self.filter_history_widget.history_items[:1] == [flt]):
+            # то же самое ещё раз (Enter даёт и returnPressed, и editingFinished)
+            if explicit:
+                self._tentative_filter = None
+            return
+        replace = tentative if tentative and same_filter_edit(tentative, flt) else None
+        self.filter_history_widget.add_filter(flt, replace=replace)
+        self._tentative_filter = None if explicit else flt
 
     def apply_history_filter(self, filter_text: str):
         self.filter_input.setText(filter_text)
