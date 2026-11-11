@@ -62,7 +62,7 @@ def alerts(qtbot, temp_settings):
 
 
 def visible_titles(alerts):
-    return [t.title.text() for t in alerts.toasts if t.isVisible()]
+    return [t.report.title for t in alerts.toasts if t.isVisible()]
 
 
 def test_toasts_show_bump_and_limit(alerts):
@@ -112,3 +112,19 @@ def test_disabled_alerts_do_not_start_watcher(alerts, temp_settings):
     temp_settings.set_crash_alerts_enabled(False)
     alerts.start("00008140-001A2B3C4D5E")
     assert alerts.watcher is None
+
+
+@pytest.mark.parametrize("name", ["MyGame", "SFA-transparency.json", "com.apple.WebKit.WebContent.Extension.Long"])
+def test_toast_text_fits(alerts, name):
+    """Длинное имя процесса не переносится посреди слова и не обрезает кнопку."""
+    report = describe(f"/{name}-2026-10-15-160659.ips")
+    toast = alerts.show_toast(report)
+    toast.adjustSize()
+    assert toast.title.text() == "Новый краш"
+    assert toast.name.toolTip() == name
+    assert toast.name.sizeHint().width() <= toast.name.width() + 1           # одной строкой, влезает
+    assert "…" in toast.name.text() or toast.name.text() == name
+    right = toast.mute_btn.mapTo(toast, toast.mute_btn.rect().topRight()).x()
+    assert toast.mute_btn.width() >= toast.mute_btn.sizeHint().width()     # кнопка не сжата
+    assert right <= toast.width() - 8 - 24                                  # и не залезает под «×»
+    assert toast.mute_btn.text().startswith("Не показывать")

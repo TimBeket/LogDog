@@ -8,12 +8,16 @@
 from datetime import datetime
 
 from PySide6.QtCore import QElapsedTimer, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QToolButton, QVBoxLayout
 
 from core.crash_alerts import FREQUENT_CRASHES, CrashReport
 from gui import icons, theme
 
 HIDE_AFTER_MS = 8000
+WIDTH = 400
+# ширина колонки с текстом: WIDTH − поля (12 + 8) − значок (22) − промежутки (2×10) − «×» (24)
+_TEXT_WIDTH = WIDTH - 12 - 8 - 22 - 2 * 10 - 24
 
 
 class CrashToast(QFrame):
@@ -28,7 +32,7 @@ class CrashToast(QFrame):
         self.setObjectName("CrashToast")
         self.setAttribute(Qt.WA_StyledBackground)
         self.setFocusPolicy(Qt.NoFocus)
-        self.setFixedWidth(360)
+        self.setFixedWidth(WIDTH)
 
         row = QHBoxLayout(self)
         row.setContentsMargins(12, 10, 8, 10)
@@ -39,10 +43,20 @@ class CrashToast(QFrame):
 
         col = QVBoxLayout()
         col.setSpacing(4)
-        self.title = QLabel(report.title)
+        # «Новый краш» отдельно, имя процесса — одной строкой: раньше
+        # «SFA-transparency.json» переносилось посреди имени по дефису. Не
+        # влезает — «…» в середине (видно и начало, и конец), полностью — в подсказке.
+        head, sep, rest = report.title.partition(": ")
+        self.title = QLabel(head if sep else report.title)
         self.title.setWordWrap(True)
         self.title.setStyleSheet("font-weight: 600;")
         col.addWidget(self.title)
+        self.name = QLabel()
+        self.name.setToolTip(rest)
+        self.name.setVisible(bool(sep))
+        if sep:
+            self.name.setText(QFontMetrics(self.name.font()).elidedText(rest, Qt.ElideMiddle, _TEXT_WIDTH))
+        col.addWidget(self.name)
         self.subtitle = QLabel()
         self.subtitle.setTextFormat(Qt.RichText)
         self.subtitle.setProperty("role", "muted")
@@ -53,8 +67,7 @@ class CrashToast(QFrame):
         self.download_btn.setProperty("variant", "primary")
         self.download_btn.clicked.connect(lambda: self.download_requested.emit(self.reports[-1]))
         buttons.addWidget(self.download_btn)
-        name = report.process if len(report.process) <= 18 else report.process[:17] + "…"
-        self.mute_btn = QPushButton(f"Не показывать от {name}")
+        self.mute_btn = QPushButton()
         self.mute_btn.setProperty("variant", "ghost")
         self.mute_btn.setToolTip(f"Больше не уведомлять о крашах {report.process}. Вернуть — в Настройках.")
         self.mute_btn.clicked.connect(lambda: self.mute_requested.emit(report.process))
@@ -64,6 +77,7 @@ class CrashToast(QFrame):
         for b in (self.download_btn, self.mute_btn):
             b.setFocusPolicy(Qt.NoFocus)
             b.setCursor(Qt.PointingHandCursor)
+        self._fit_mute_text(_TEXT_WIDTH - self.download_btn.sizeHint().width() - buttons.spacing())
         row.addLayout(col, 1)
 
         close = QToolButton()
@@ -84,6 +98,21 @@ class CrashToast(QFrame):
         self._timer.start()
         self._shown = QElapsedTimer()
         self._shown.start()
+
+    def _fit_mute_text(self, room: int):
+        """«Не показывать от <процесс>», имя сокращено так, чтобы кнопка влезла
+        рядом со «Скачать» (раньше длинное имя обрезало кнопку); совсем не
+        влезает — просто «Не показывать», процесс виден выше и в подсказке."""
+        btn = self.mute_btn
+        btn.ensurePolished()
+        fm = btn.fontMetrics()
+        btn.setText("Не показывать")
+        padding = btn.sizeHint().width() - fm.horizontalAdvance(btn.text())
+        prefix = "Не показывать от "
+        name_room = room - padding - fm.horizontalAdvance(prefix)
+        name = fm.elidedText(self.report.process, Qt.ElideRight, name_room) if name_room > 0 else ""
+        if name and name != "…":
+            btn.setText(prefix + name)
 
     def _update_subtitle(self):
         extra = len(self.reports) - 1
