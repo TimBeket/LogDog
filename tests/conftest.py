@@ -36,27 +36,23 @@ def isolated_settings(monkeypatch, tmp_path):
 
 
 
+
+_exit_status = {}
+
+
+def pytest_sessionfinish(session, exitstatus):
+    _exit_status["code"] = int(exitstatus)
+
+
 @pytest.hookimpl(trylast=True)
 def pytest_unconfigure(config):
-    """Тесты кончились, а процесс не выходит (на Windows в CI висел до таймаута
-    в 20 минут) — через минуту стеки всех потоков в вывод и выход с ошибкой:
-    видно, что держит, и прогон не ждёт впустую. Отдельный поток, а не
-    faulthandler.dump_traceback_later: его pytest отключает на выходе."""
+    """После тестов — сразу выход с кодом pytest, без финального закрытия Qt и
+    Python: на Windows в CI оно иногда висело до таймаута в 20 минут (2 из 6
+    прогонов, уже после «N passed»; на Linux и macOS не бывало). Тестам оно
+    ничего не даёт, а релизная сборка из-за него падала бы по таймауту."""
     import os
     import sys
-    import threading
-    import time
-    import traceback
-
-    def watchdog():
-        time.sleep(60)
-        out = sys.__stderr__ or sys.stderr
-        out.write("\n=== Тесты кончились, а процесс не вышел за 60 с. Потоки: ===\n")
-        names = {t.ident: t.name for t in threading.enumerate()}
-        for ident, frame in sys._current_frames().items():
-            out.write(f"\n--- {names.get(ident, '?')} ({ident}) ---\n")
-            out.write("".join(traceback.format_stack(frame)))
-        out.flush()
-        os._exit(3)
-
-    threading.Thread(target=watchdog, name="exit-watchdog", daemon=True).start()
+    if "code" in _exit_status and os.environ.get("LOGDOG_TESTS_NORMAL_EXIT") != "1":
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(_exit_status["code"])

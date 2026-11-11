@@ -95,7 +95,8 @@ def test_ui_stall_is_logged(qtbot, monkeypatch, caplog):
     qtbot.addWidget(w)
     try:
         now = [w._stall_last]
-        monkeypatch.setattr(mw.time, "monotonic", lambda: now[0])
+        import types   # подменяем часы только главному окну, не всему процессу (фоновым потокам)
+        monkeypatch.setattr(mw, "time", types.SimpleNamespace(monotonic=lambda: now[0]))
         with caplog.at_level(logging.WARNING, logger="LogDog"):
             now[0] += 0.3
             w._check_stall()
