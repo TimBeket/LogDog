@@ -89,10 +89,13 @@ class CrashToast(QFrame):
         # Меряем, когда кнопки уже в карточке и со шрифтом окна (до этого у них
         # шрифт по умолчанию). Широкий шрифт или крупный масштаб экрана — кнопка
         # не влезла бы рядом и сжалась (поймали тесты на Windows): вторая строка.
-        if not self._buttons_fit_in_row(buttons.spacing()):
+        download_w, mute_w = self._button_widths()
+        if download_w + buttons.spacing() + mute_w > _TEXT_WIDTH:
             buttons.setDirection(QBoxLayout.TopToBottom)
             for b in (self.download_btn, self.mute_btn):
                 buttons.setAlignment(b, Qt.AlignLeft)
+            # и одна кнопка не влезает (очень широкий шрифт) — карточка шире, а не обрезанная кнопка
+            self.setFixedWidth(WIDTH + max(0, max(download_w, mute_w) - _TEXT_WIDTH))
 
         close = QToolButton()
         close.setIcon(icons.icon("close"))
@@ -113,9 +116,9 @@ class CrashToast(QFrame):
         self._shown = QElapsedTimer()
         self._shown.start()
 
-    def _buttons_fit_in_row(self, spacing: int) -> bool:
-        """Помещаются ли обе кнопки в одну строку. Ширина «Больше не показывать» —
-        с запасом на заметный вид, который она получает, когда процесс часто падает."""
+    def _button_widths(self):
+        """Нужная ширина «Скачать» и «Больше не показывать» — у второй с запасом на
+        заметный вид, который она получает, когда процесс часто падает."""
         self.ensurePolished()   # шрифт и стиль окна — до замеров, иначе меряем не тем шрифтом
         widths = []
         for variant in ("ghost", ""):
@@ -126,7 +129,7 @@ class CrashToast(QFrame):
         self.mute_btn.setProperty("variant", "ghost")
         theme.repolish(self.mute_btn)
         self.download_btn.ensurePolished()
-        return self.download_btn.sizeHint().width() + spacing + max(widths) <= _TEXT_WIDTH
+        return self.download_btn.sizeHint().width(), max(widths)
 
     def _update_subtitle(self):
         extra = len(self.reports) - 1
