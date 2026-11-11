@@ -3,6 +3,7 @@
 #   git push origin HEAD:perf/windows
 # Результат — таблицы в сводке запуска (Actions → Perf → запуск → Summary):
 # текущий код и, для сравнения на той же машине, версия v1.0.
+# Ветка perf/exit — только проверка, что программа закрывается (tools/exit_check.py).
 # v1.0 — на 20 тыс. записей: на 100 тыс. её поиск и фильтр шли бы десятки минут.
 name: Perf
 
@@ -51,20 +52,36 @@ jobs:
             echo
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Закрывается ли программа: тесты на Windows иногда не выходили после прогона.
+      - name: Выход программы — текущий код
+        continue-on-error: true
+        timeout-minutes: 20
+        shell: bash
+        run: python tools/exit_check.py --runs 15 --label "текущий код"
+
+      - name: Выход программы — v1.0
+        continue-on-error: true
+        timeout-minutes: 20
+        shell: bash
+        run: python tools/exit_check.py --runs 15 --code ../v1.0 --label "v1.0"
+
       # Qt — родной для Windows (как у пользователей), не offscreen.
       - name: Текущий код, 100 000 записей
+        if: github.ref_name != 'perf/exit'
         continue-on-error: true
         timeout-minutes: 15
         shell: bash
         run: python tools/perf_bench.py --entries 100000 --label "Текущий код, 100 000 записей"
 
       - name: Текущий код, 20 000 записей
+        if: github.ref_name != 'perf/exit'
         continue-on-error: true
         timeout-minutes: 10
         shell: bash
         run: python tools/perf_bench.py --entries 20000 --label "Текущий код, 20 000 записей"
 
       - name: v1.0, 20 000 записей
+        if: github.ref_name != 'perf/exit'
         continue-on-error: true
         timeout-minutes: 30
         shell: bash
