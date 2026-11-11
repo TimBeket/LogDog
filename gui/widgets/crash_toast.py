@@ -20,6 +20,11 @@ WIDTH = 400
 _TEXT_WIDTH = WIDTH - 12 - 8 - 22 - 2 * 10 - 24
 
 
+def _times(n: int) -> str:
+    """«раз» / «раза» к числу: 1 раз, 3 раза, 5 раз, 22 раза."""
+    return "раза" if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14) else "раз"
+
+
 class CrashToast(QFrame):
     download_requested = Signal(object)   # CrashReport
     mute_requested = Signal(str)          # процесс
@@ -59,6 +64,7 @@ class CrashToast(QFrame):
         col.addWidget(self.name)
         self.subtitle = QLabel()
         self.subtitle.setTextFormat(Qt.RichText)
+        self.subtitle.setWordWrap(True)   # на крупном шрифте строка может не влезть
         self.subtitle.setProperty("role", "muted")
         col.addWidget(self.subtitle)
         buttons = QBoxLayout(QBoxLayout.LeftToRight)
@@ -126,10 +132,10 @@ class CrashToast(QFrame):
         extra = len(self.reports) - 1
         text = f"{self._first:%H:%M:%S}"
         if extra:
-            text += f"  ·  и ещё {extra} — процесс падает снова"
+            text += f"  ·  упал ещё {extra} {_times(extra)}"
         if len(self.reports) >= FREQUENT_CRASHES:
             # часто падает — подсказать, что от него можно отписаться
-            text += "<br>Часто падает — можно не показывать ↓"
+            text += "<br>Часто падает — можно не показывать"
             if self.mute_btn.property("variant") != "":
                 self.mute_btn.setProperty("variant", "")
                 theme.repolish(self.mute_btn)

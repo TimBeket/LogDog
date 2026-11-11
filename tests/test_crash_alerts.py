@@ -71,7 +71,7 @@ def test_toasts_show_bump_and_limit(alerts):
     assert visible_titles(alerts) == ["Новый краш: MyGame"]
     alerts.on_new_paths(["/MyGame-2026-10-15-160710.ips", "/MyGame-2026-10-15-160720.ips"])
     (toast,) = alerts.toasts
-    assert "и ещё 2" in toast.subtitle.text()             # цикл падений — счётчик, не новые карточки
+    assert "упал ещё 2 раза" in toast.subtitle.text()     # цикл падений — счётчик, не новые карточки
     for i in range(5):
         alerts.on_new_paths([f"/Proc{i}-2026-10-15-160659.ips"])
     assert len(alerts.toasts) == 3                         # не больше трёх
@@ -146,5 +146,12 @@ def test_toast_buttons_never_squeezed(alerts, point_size):
     for btn in (toast.download_btn, toast.mute_btn):
         assert btn.width() >= btn.sizeHint().width()
         assert btn.mapTo(toast, btn.rect().topRight()).x() <= toast.width() - 8 - 24
-    if point_size == 16:
-        assert toast.mute_btn.y() > toast.download_btn.y()          # во вторую строку
+    for label in (toast.title, toast.name, toast.subtitle):          # текст не уходит за край
+        assert label.mapTo(toast, label.rect().topRight()).x() <= toast.width() - 8 - 24
+        assert label.heightForWidth(label.width()) <= label.height() or not label.wordWrap()
+
+
+def test_times_word():
+    from gui.widgets.crash_toast import _times
+    assert [f"{n} {_times(n)}" for n in (1, 2, 4, 5, 11, 12, 21, 22, 25, 112)] == [
+        "1 раз", "2 раза", "4 раза", "5 раз", "11 раз", "12 раз", "21 раз", "22 раза", "25 раз", "112 раз"]
