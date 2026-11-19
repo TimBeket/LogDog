@@ -22,9 +22,9 @@ annotated-types==0.8.0 \
     --hash=sha256:13b2beaad985e05e2d6407ee4c4f35590b11f8d693a258a561055cac8f64cab7 \
     --hash=sha256:f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0
     # via pydantic
-ansilogs==1.1.0 \
-    --hash=sha256:15f0e3581f9e14d0ddadd3795408878ef6d9023966607abadfa718f24baff882 \
-    --hash=sha256:8cfea017cb071bed082309c67d086bbf259ce39524d85b1a9d6b0da55af6e0fc
+ansilogs==1.2.0 \
+    --hash=sha256:55da304534b6853a002585d747add65ae6fefa6cd14da30e1349d649de5a883c \
+    --hash=sha256:c1c250c8c5f3d0622208f08fa260682659400276c198362955d3e765a63e7460
     # via
     #   ipsw-parser
     #   pymobiledevice3
@@ -1287,9 +1287,9 @@ pylzss==0.3.4 \
     --hash=sha256:ff71b7384771bbfc9b34a9bbd3228f49a0cc1d6dcba245e631aaa462b45c0eec \
     --hash=sha256:ffd7cdb598a2a67b63c9433eab4293db24a8deb99188503b96de1599a1beed52
     # via pyimg4
-pymobiledevice3==11.49.5 \
-    --hash=sha256:627834b88af88f562b413d97a014f29b3fd3cc246eb8b0249d795810eed35e22 \
-    --hash=sha256:83cf2a9ab97b17a772e915f8261e1ac06de2d74af807c0505cfdfcfb737e2e0f
+pymobiledevice3==11.59.0 \
+    --hash=sha256:313b75a472a78fffdb1f5e4a8ade2c1bd3e531433ec7988d08b8532ef3a19857 \
+    --hash=sha256:884265706787e5b1802c344b8f9ccffaf09cd91413cb62db27070e97a542c26d
     # via -r requirements.txt
 pyside6==6.12.0 \
     --hash=sha256:22e2ec6407f32b61955a28f91ab55676e60017210285c28f0c381bfeed389414 \
